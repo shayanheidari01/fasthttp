@@ -1,22 +1,60 @@
 .venv/
 venv/
 myenv/
+ENV/
+env/
+env.bak/
 __pycache__/
 *.py[cod]
 *.pyc
 *$py.class
+
+# Packaging
 dist/
 build/
 *.egg-info/
+*.egg
+eggs/
 pip-wheel-metadata/
+*.whl
+
+# PyPI / Twine credentials
+.pypirc
+.pypi-token
+.pypi-signing-key
+.twine
+
+# Environment files
 .env
 *.env
+.python-version
+
+# Test / type check / caches
 .pytest_cache/
 .mypy_cache/
+.pyre/
+.pytype/
+.cache/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# Coverage
 .coverage
+.coverage.*
 coverage.xml
 htmlcov/
+
+# IDE / editors
 .idea/
 .vscode/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
 .DS_Store
 Thumbs.db
+
+# Misc
+pip-log.txt
+pip-delete-this-directory.txt

@@ -11,7 +11,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 pip install -e .[dev]
 
 # Normal install (when published):
-# pip install fasthttp
+# pip install pyfasthttp
 ```
 
 Note: Brotli (`br`) support is optional and available via the `brotli` package (included in the `dev` extras). Install with `pip install -e .[dev]` or `pip install brotli`.

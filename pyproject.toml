@@ -1,19 +1,22 @@
 [project]
-name = "fasthttp"
+name = "pyfasthttp"
 version = "0.1.0"
 description = "Lightweight sync/async HTTP client with pooling built on h11."
-authors = [{ name = "Shayan Heidari", email = "" }]
-readme = "README.md"
+authors = [{ name = "Shayan Heidari" }]
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
 dependencies = [
     "h11>=0.14.0",
 ]
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 keywords = ["http", "client", "async", "sync", "http1.1", "requests" ]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: OS Independent",
 ]
 
@@ -24,6 +27,9 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "brotli>=1.0.9", "ruff>=0.17.0", "
 [project.urls]
 Homepage = "https://github.com/shayanheidari01/fasthttp"
 Repository = "https://github.com/shayanheidari01/fasthttp"
+
+[tool.setuptools.packages.find]
+include = ["fasthttp*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
