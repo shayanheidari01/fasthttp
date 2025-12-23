@@ -1,5 +1,5 @@
 import asyncio
-import json
+import fasthttp
 import logging
 import ssl
 import time
@@ -54,7 +54,7 @@ class Client:
         self.retry = retry or RetryPolicy(max_attempts=1)
         self.logger = logger or get_logger()
         self.cookies = cookies or CookieJar()
-        self.user_agent = user_agent or "fasthttp/0.1.1"
+        self.user_agent = user_agent or "fasthttp/{}".format(fasthttp.__version__)
 
     async def request(
         self,

@@ -1,13 +1,11 @@
 """
 Example of using fasthttp in synchronous mode.
 
-To enable sync mode, call enable_sync() after importing the module.
+sync mode auto enabled.
 """
 
-from fasthttp import Client, enable_sync, RetryPolicy
+from fasthttp import Client, RetryPolicy
 
-# Enable sync wrappers - this converts all async methods to sync
-enable_sync()
 
 # Now you can use Client synchronously (no await needed)
 if __name__ == "__main__":

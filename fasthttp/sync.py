@@ -6,6 +6,11 @@ import functools
 import inspect
 import threading
 
+from fasthttp.client import Client
+from fasthttp.response import Response
+from fasthttp.pool import ConnectionPool
+from fasthttp.connection import Connection
+
 
 def async_to_sync(obj, name):
     """
@@ -102,32 +107,15 @@ def wrap_methods(source):
     - source: Class containing asynchronous methods.
     """
     for name in dir(source):
-        # Skip special methods and private methods
-        if name.startswith("_"):
-            continue
-            
-        method = getattr(source, name, None)
-        
-        # Skip if not a method or if it's a property
-        if not callable(method):
-            continue
+        method = getattr(source, name)
 
-        if inspect.iscoroutinefunction(method) or inspect.isasyncgenfunction(method):
+        if not name.startswith("_") and (
+            inspect.iscoroutinefunction(method) or inspect.isasyncgenfunction(method)
+        ):
             async_to_sync(source, name)
 
 
-def enable_sync():
-    """
-    Enable synchronous wrappers for all async classes.
-    This should be called after importing the module.
-    """
-    from .client import Client
-    from .response import Response
-    from .pool import ConnectionPool
-    from .connection import Connection
-    
-    wrap_methods(Client)
-    wrap_methods(Response)
-    wrap_methods(ConnectionPool)
-    wrap_methods(Connection)
-
+wrap_methods(Client)
+wrap_methods(Response)
+wrap_methods(ConnectionPool)
+wrap_methods(Connection)

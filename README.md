@@ -26,7 +26,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 
 ## Features
 
-- **Sync & Async Support**: Single API that can work synchronously or asynchronously using `enable_sync()`
+- **Sync & Async Support**: Single API that can work synchronously or asynchronously
 - **Connection Pooling**: Efficient connection reuse to improve throughput
 - **Automatic Compression**: Built-in support for gzip and optional brotli (`br`) compression
 - **Streaming Support**: Stream large responses without loading everything into memory
@@ -100,7 +100,7 @@ asyncio.run(main())
 
 ### Client
 
-The `Client` class provides an asynchronous HTTP client with connection pooling that can be used either synchronously or asynchronously. When used directly, it requires async/await syntax. When the synchronous wrapper is enabled using `enable_sync()`, it can be used without async/await syntax.
+The `Client` class provides an asynchronous HTTP client with connection pooling that can be used either synchronously or asynchronously. When used directly, it requires async/await syntax.
 
 ```python
 from fasthttp import Client
@@ -338,10 +338,7 @@ with Client(base_url="https://api.example.com", retry=retry_policy) as client:
 The library provides a synchronous wrapper for async classes:
 
 ```python
-from fasthttp import Client, enable_sync
-
-# Enable sync wrapper
-enable_sync()
+from fasthttp import Client
 
 # Now you can use async classes synchronously
 with Client(base_url="https://api.example.com") as client:
