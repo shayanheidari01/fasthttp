@@ -2,124 +2,432 @@
 
 A small, fast, and extensible HTTP/1.1 client library with both synchronous and asynchronous APIs, connection pooling, streaming support, retry/backoff, and automatic decoding of compressed responses.
 
----
+[![PyPI version](https://badge.fury.io/py/pyfasthttp.svg)](https://badge.fury.io/py/pyfasthttp)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Python Version](https://img.shields.io/pypi/pyversions/pyfasthttp.svg)](https://pypi.org/project/pyfasthttp/)
 
-## Installation 🚀
+## Table of Contents
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [API Reference](#api-reference)
+  - [Client](#client)
+  - [Request](#request)
+  - [Response](#response)
+  - [Timeouts](#timeouts)
+  - [Retry Policy](#retry-policy)
+  - [Cookies](#cookies)
+- [Advanced Usage](#advanced-usage)
+- [Synchronous Wrapper](#synchronous-wrapper)
+- [Error Handling](#error-handling)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Features
+
+- **Sync & Async Support**: Single API that can work synchronously or asynchronously using `enable_sync()`
+- **Connection Pooling**: Efficient connection reuse to improve throughput
+- **Automatic Compression**: Built-in support for gzip and optional brotli (`br`) compression
+- **Streaming Support**: Stream large responses without loading everything into memory
+- **JSON Handling**: Automatic JSON decoding with charset and compression support
+- **Timeout Management**: Flexible timeout configuration for connections and reads
+- **Retry & Backoff**: Configurable retry policies with exponential backoff
+- **Circuit Breaker**: Optional circuit breaker pattern to prevent cascading failures
+- **Cookie Management**: Full cookie jar support
+- **HTTP/1.1 Compliant**: Properly implements the HTTP/1.1 specification
+- **Lightweight**: Minimal dependencies, built on the `h11` library
+
+## Installation
+
+Install using pip:
 
 ```bash
-# For development
-pip install -e .[dev]
-
-# Normal install (when published):
-# pip install pyfasthttp
+pip install pyfasthttp
 ```
 
-Note: Brotli (`br`) support is optional and available via the `brotli` package (included in the `dev` extras). Install with `pip install -e .[dev]` or `pip install brotli`.
+For development with all optional dependencies:
 
----
+```bash
+pip install -e .[dev]
+```
 
-## Quick Examples
+Note: Brotli (`br`) support is optional and available via the `brotli` package (included in the `dev` extras). Install with `pip install brotli` for brotli compression support.
 
-### Synchronous usage
+## Quick Start
+
+### Synchronous Usage
 
 ```python
 from fasthttp import Client
 from fasthttp.timeouts import Timeout
 
-with Client(timeout=Timeout(connect=5, read=5)) as client:
+# Basic GET request
+with Client() as client:
     resp = client.get("https://httpbin.org/get")
-    print(resp.status_code)
-    print(resp.json())  # Decodes according to Content-Encoding and charset
+    print(f"Status: {resp.status_code}")
+    print(f"Response: {resp.json()}")
+
+# With custom timeout
+with Client(timeout=Timeout(connect=5, read=10)) as client:
+    resp = client.get("https://httpbin.org/get")
+    print(resp.json())
 ```
 
-### Asynchronous usage
+### Asynchronous Usage
 
 ```python
 import asyncio
-from fasthttp import AsyncClient
+from fasthttp import Client
 from fasthttp.timeouts import Timeout
 
 async def main():
-    async with AsyncClient(timeout=Timeout(connect=5, read=5)) as client:
+    # Basic async request
+    async with Client() as client:
         resp = await client.get("https://httpbin.org/get")
-        print(resp.status_code)
-        async for chunk in resp.aiter_bytes():
-            print(chunk)
+        print(f"Status: {resp.status_code}")
+        print(f"Response: {resp.json()}")
+    
+    # With custom timeout
+    async with Client(timeout=Timeout(connect=5, read=10)) as client:
+        resp = await client.get("https://httpbin.org/get")
+        print(resp.json())
 
 asyncio.run(main())
 ```
 
----
+## API Reference
 
-## Key Features ✨
-- **Sync & Async**: Parallel APIs for synchronous and asynchronous usage.
-- **Connection pooling** to improve throughput and reduce connection churn.
-- **Streaming** support for reading chunked responses.
-- **Automatic compression support**: gzip always, optional brotli (`br`) when installed.
-- **Reliable JSON decoding** via `Response.json()` which handles decompression and charset decoding.
-- **Retry & Backoff** policies for transient failures.
-- **Circuit Breaker** (optional) to fail fast for hosts exhibiting repeated failures.
+### Client
 
----
+The `Client` class provides an asynchronous HTTP client with connection pooling that can be used either synchronously or asynchronously. When used directly, it requires async/await syntax. When the synchronous wrapper is enabled using `enable_sync()`, it can be used without async/await syntax.
 
-## Circuit Breaker 🔧
-Enable the circuit breaker by configuring `RetryPolicy`:
+```python
+from fasthttp import Client
+
+# Basic client
+with Client() as client:
+    response = client.get("https://api.example.com/users")
+
+# Client with base URL
+with Client(base_url="https://api.example.com") as client:
+    response = client.get("/users")  # Will make request to https://api.example.com/users
+
+# Client with custom timeout
+from fasthttp.timeouts import Timeout
+with Client(timeout=Timeout(connect=5, read=10, total=30)) as client:
+    response = client.get("https://api.example.com/users")
+```
+
+#### Client Methods:
+- `get(url, **kwargs)` - Send a GET request (async by default)
+- `post(url, **kwargs)` - Send a POST request (async by default)
+- `put(url, **kwargs)` - Send a PUT request (async by default)
+- `patch(url, **kwargs)` - Send a PATCH request (async by default)
+- `delete(url, **kwargs)` - Send a DELETE request (async by default)
+- `head(url, **kwargs)` - Send a HEAD request (async by default)
+- `options(url, **kwargs)` - Send an OPTIONS request (async by default)
+- `request(method, url, **kwargs)` - Send a custom method request (async by default)
+
+
+### Request
+
+The `Request` class represents an HTTP request.
+
+```python
+from fasthttp import Request
+
+# Create a request object
+request = Request(
+    method="GET",
+    url="https://api.example.com/users",
+    headers={"Authorization": "Bearer token"},
+    params={"page": 1, "limit": 10},
+    data={"key": "value"}
+)
+```
+
+### Response
+
+The `Response` class represents an HTTP response.
+
+```python
+from fasthttp import Client
+
+with Client() as client:
+    resp = client.get("https://httpbin.org/json")
+    
+    # Access response properties
+    print(f"Status: {resp.status_code}")
+    print(f"Headers: {resp.headers}")
+    print(f"Text: {resp.text()}")
+    print(f"JSON: {resp.json()}")
+    
+    # Check status
+    resp.raise_for_status()  # Raises an exception for 4xx/5xx responses
+```
+
+#### Response Properties:
+- `status_code` - HTTP status code
+- `headers` - Response headers
+- `content` - Raw response content as bytes
+- `encoding` - Response encoding
+
+#### Response Methods:
+- `text()` - Get response as text string
+- `json()` - Parse response as JSON
+- `raise_for_status()` - Raise an exception for error status codes
+- `iter_bytes()` - Iterate over response content in chunks (sync)
+- `aiter_bytes()` - Asynchronously iterate over response content in chunks
+- `iter_text()` - Iterate over response content as text chunks (sync)
+- `aiter_text()` - Asynchronously iterate over response content as text chunks
+
+### Timeouts
+
+Configure connection, read, and total timeouts.
+
+```python
+from fasthttp.timeouts import Timeout
+
+# Different timeout configurations
+no_timeout = Timeout()  # No timeouts
+connect_timeout = Timeout(connect=5)  # 5 seconds to connect
+read_timeout = Timeout(read=10)  # 10 seconds to read
+full_timeout = Timeout(connect=5, read=10, total=30)  # Full configuration
+```
+
+### Retry Policy
+
+Configure retry behavior with optional circuit breaker.
 
 ```python
 from fasthttp import Client
 from fasthttp.retry import RetryPolicy
 
-rp = RetryPolicy(max_attempts=1, circuit_breaker=True, cb_failure_threshold=3, cb_recovery_seconds=60)
-with Client(base_url="https://api.example.com", retry=rp) as client:
+# Basic retry policy
+retry_policy = RetryPolicy(max_attempts=3)
+
+# Advanced retry policy with circuit breaker
+retry_policy = RetryPolicy(
+    max_attempts=5,
+    backoff_factor=0.5,
+    status_codes=[500, 502, 503, 504],
+    circuit_breaker=True,
+    cb_failure_threshold=3,
+    cb_recovery_seconds=60
+)
+
+with Client(retry=retry_policy) as client:
+    resp = client.get("https://api.example.com/resource")
+```
+
+#### Retry Policy Parameters:
+- `max_attempts` - Maximum number of attempts (including the initial request)
+- `backoff_factor` - Factor for exponential backoff between retries
+- `status_codes` - List of HTTP status codes that should trigger a retry
+- `circuit_breaker` - Whether to enable the circuit breaker
+- `cb_failure_threshold` - Number of failures before opening the circuit
+- `cb_recovery_seconds` - Seconds to wait before attempting to close the circuit
+
+### Cookies
+
+Manage cookies with the `CookieJar`.
+
+```python
+from fasthttp import Client
+from fasthttp.cookies import CookieJar
+
+# Create a cookie jar
+jar = CookieJar()
+jar.set("session_id", "abc123", domain="example.com", path="/", secure=True)
+
+with Client(cookies=jar) as client:
+    resp = client.get("https://example.com/protected")
+```
+
+## Advanced Usage
+
+### Streaming Large Responses
+
+```python
+from fasthttp import Client
+
+with Client() as client:
+    resp = client.get("https://httpbin.org/stream/20", stream=True)
+    
+    # Process response in chunks
+    for chunk in resp.iter_bytes():
+        print(f"Received chunk: {len(chunk)} bytes")
+```
+
+### Async Streaming
+
+```python
+import asyncio
+from fasthttp import Client
+
+async def stream_example():
+    async with Client() as client:
+        resp = await client.get("https://httpbin.org/stream/20", stream=True)
+        
+        # Process response in chunks
+        async for chunk in resp.aiter_bytes():
+            print(f"Received chunk: {len(chunk)} bytes")
+
+asyncio.run(stream_example())
+```
+
+### Custom Headers and Parameters
+
+```python
+from fasthttp import Client
+
+with Client() as client:
+    # With custom headers and query parameters
+    resp = client.get(
+        "https://httpbin.org/headers",
+        headers={"User-Agent": "MyApp/1.0"},
+        params={"key": "value"}
+    )
+    print(resp.json())
+```
+
+### POST Request with Data
+
+```python
+from fasthttp import Client
+
+with Client() as client:
+    # Send JSON data
+    resp = client.post(
+        "https://httpbin.org/post",
+        json={"key": "value"}
+    )
+    print(resp.json())
+    
+    # Send form data
+    resp = client.post(
+        "https://httpbin.org/post",
+        data={"field": "value"}
+    )
+    print(resp.json())
+```
+
+### Circuit Breaker
+
+Enable the circuit breaker to prevent cascading failures:
+
+```python
+from fasthttp import Client
+from fasthttp.retry import RetryPolicy
+
+# Configure circuit breaker
+retry_policy = RetryPolicy(
+    max_attempts=1,  # Only try once before circuit breaker takes over
+    circuit_breaker=True,
+    cb_failure_threshold=3,      # Open circuit after 3 failures
+    cb_recovery_seconds=60       # Wait 60 seconds before trying again
+)
+
+with Client(base_url="https://api.example.com", retry=retry_policy) as client:
     resp = client.get("/resource")
 ```
 
-Parameters:
-- `cb_failure_threshold`: number of consecutive failures required to open the circuit.
-- `cb_recovery_seconds`: seconds to wait before attempting requests again after the circuit is open.
+## Synchronous Wrapper
 
----
+The library provides a synchronous wrapper for async classes:
 
-## JSON decoding & charset behavior 🧾
-`Response.json()` does the following:
-- First, it decodes the response body according to `Content-Encoding` (gzip, br).
-- Then it decodes text according to the `charset` from the `Content-Type` header (default: `utf-8`).
-- If the body is empty or not valid JSON, a `json.decoder.JSONDecodeError` is raised.
+```python
+from fasthttp import Client, enable_sync
 
----
+# Enable sync wrapper
+enable_sync()
 
-## Development & Testing 🧪
-
-```bash
-# Install development dependencies
-pip install -e .[dev]
-
-# Run tests
-python -m pytest -q
+# Now you can use async classes synchronously
+with Client(base_url="https://api.example.com") as client:
+    resp = client.get("/users")  # No await needed
+    data = resp.json()
 ```
 
-The repository includes a GitHub Actions workflow that runs tests on multiple Python versions and also runs `ruff` and `mypy` checks.
+## Error Handling
 
----
+The library provides specific exception types for different error conditions:
 
-## Contributing 🤝
-Please open an issue for bugs or feature requests, or send a pull request with tests and documentation updates. See `CONTRIBUTING.md` for guidelines.
+```python
+from fasthttp import Client
+from fasthttp.errors import (
+    FastHTTPError,
+    RequestError,
+    ResponseError,
+    HTTPStatusError,
+    PoolError
+)
 
----
+with Client() as client:
+    try:
+        resp = client.get("https://httpbin.org/status/500")
+        resp.raise_for_status()  # Raises HTTPStatusError for 5xx responses
+    except HTTPStatusError as e:
+        print(f"HTTP error occurred: {e}")
+    except RequestError as e:
+        print(f"Request error occurred: {e}")
+    except FastHTTPError as e:
+        print(f"General FastHTTP error occurred: {e}")
+```
+
+### Available Exceptions:
+- `FastHTTPError` - Base exception class
+- `RequestError` - Errors during request processing
+- `ResponseError` - Errors during response processing
+- `HTTPStatusError` - HTTP error status codes (4xx, 5xx)
+- `PoolError` - Connection pool errors
+
+## Development
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/shayanheidari01/fasthttp.git
+cd fasthttp
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install in development mode
+pip install -e .[dev]
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+python -m pytest
+
+# Run tests with verbose output
+python -m pytest -v
+
+# Run specific test file
+python -m pytest test.py
+```
+
+### Code Quality
+
+The project uses `ruff` for linting and `mypy` for type checking:
+
+```bash
+# Run linter
+ruff check .
+
+# Run type checker
+mypy fasthttp/
+```
+
+## Contributing
+
+Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for detailed contribution guidelines.
 
 ## License
-This project is suitable for release under the **MIT License** (add a `LICENSE` file if you want to publish it).
 
----
-
-## Changelog (summary)
-- Added optional Circuit Breaker and tests.
-- Improved `Response.json()` to correctly decode compressed and charset-encoded payloads.
-- Added async test coverage to ensure parity with the sync `Client`.
-- Optional brotli (`br`) support when `brotli` package is installed.
-
----
-
-If you'd like, I can also:
-- Convert the bundled sync/async tests into `pytest`-style files under `tests/` (with `pytest-asyncio`), or
-- Add a CI matrix job that installs `brotli` and validates `br` support.
+This project is licensed under the GNU General Public License v3 (GPLv3). See the [LICENSE](LICENSE) file for details.

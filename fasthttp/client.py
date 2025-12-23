@@ -1,20 +1,41 @@
+import asyncio
+import json
+import logging
 import ssl
 import time
-from typing import Dict, Optional
-from urllib.parse import urljoin
+from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse, parse_qs
 
 from .pool import ConnectionPool
+from .request import Request
+from .response import Response
 from .retry import RetryPolicy
 from .logging import get_logger
 from .cookies import CookieJar
 from .errors import RequestError
-from .request import Request
-from .response import Response
 
 
 class Client:
     """
-    Minimal sync HTTP/1.1 client with connection pooling.
+    Async HTTP/1.1 client with connection pooling, retry logic, cookie management,
+    and support for JSON/form data.
+    
+    Features:
+    - Connection pooling with health checks
+    - Automatic retry with exponential backoff
+    - Circuit breaker support
+    - Cookie jar with full RFC 6265 compliance
+    - JSON and form-encoded body support
+    - Query parameter support
+    - Redirect following
+    - Streaming responses
+    - Elapsed time tracking
+    - Redirect history tracking
+    
+    Example:
+        async with Client(base_url="https://api.example.com") as client:
+            resp = await client.get("/users", params={"page": 1})
+            data = resp.json()
     """
 
     def __init__(
@@ -23,8 +44,9 @@ class Client:
         pool: Optional[ConnectionPool] = None,
         timeout: Optional[float] = None,
         retry: Optional[RetryPolicy] = None,
-        logger=None,
+        logger: Optional[logging.Logger] = None,
         cookies: Optional[CookieJar] = None,
+        user_agent: Optional[str] = None,
     ) -> None:
         self.base_url = base_url
         self.pool = pool or ConnectionPool()
@@ -32,19 +54,18 @@ class Client:
         self.retry = retry or RetryPolicy(max_attempts=1)
         self.logger = logger or get_logger()
         self.cookies = cookies or CookieJar()
+        self.user_agent = user_agent or "fasthttp/0.1.1"
 
-    @staticmethod
-    def _sleep(delay: float) -> None:
-        if delay > 0:
-            time.sleep(delay)
-
-    def request(
+    async def request(
         self,
         method: str,
         url: str,
         *,
         headers: Optional[Dict[str, str]] = None,
         content: Optional[bytes] = None,
+        json: Optional[Any] = None,
+        data: Optional[Dict[str, Union[str, int, float, None]]] = None,
+        params: Optional[Dict[str, Union[str, int, float, None]]] = None,
         timeout: Optional[float] = None,
         verify: bool = True,
         ssl_context: Optional[ssl.SSLContext] = None,
@@ -52,106 +73,237 @@ class Client:
         follow_redirects: bool = True,
         max_redirects: int = 5,
     ) -> Response:
+        # Build URL with query parameters
         current_url = urljoin(self.base_url, url) if self.base_url else url
+        if params:
+            current_url = self._build_url_with_params(current_url, params)
+        
         method = method.upper()
         resolved_timeout = timeout or self.timeout
-        current_content = content
-        current_headers = headers or {}
+        
+        # Handle body content (json, data, or content)
+        # Note: 'json' parameter shadows the json module, so we use it before assignment
+        json_data = json
+        form_data = data
+        if json_data is not None:
+            if content is not None or form_data is not None:
+                raise ValueError("Cannot specify 'content' or 'data' together with 'json'")
+            # Import json module with alias to avoid shadowing
+            import json as _json_module
+            current_content = _json_module.dumps(json_data).encode("utf-8")
+            current_headers = headers or {}
+            if "content-type" not in {k.lower() for k in current_headers}:
+                current_headers["Content-Type"] = "application/json"
+        elif form_data is not None:
+            if content is not None:
+                raise ValueError("Cannot specify both 'content' and 'data' parameters")
+            # Form-encoded data
+            current_content = urlencode({k: str(v) for k, v in form_data.items() if v is not None}).encode("utf-8")
+            current_headers = headers or {}
+            if "content-type" not in {k.lower() for k in current_headers}:
+                current_headers["Content-Type"] = "application/x-www-form-urlencoded"
+        else:
+            current_content = content
+            current_headers = headers or {}
+        
         redirect_codes = {301, 302, 303, 307, 308}
         redirects = 0
+        response_history: List[Response] = []
+        start_time = time.time()
 
         while True:
             hdrs = self._inject_cookies(current_headers, current_url)
-            req = Request(method=method, url=current_url, headers=hdrs, content=current_content, timeout=resolved_timeout)
-
+            # Add User-Agent if not present
+            if "user-agent" not in {k.lower() for k in hdrs}:
+                hdrs["User-Agent"] = self.user_agent
+            
+            req = Request(
+                method=method,
+                url=current_url,
+                headers=hdrs,
+                content=current_content,
+                timeout=resolved_timeout,
+            )
             # Circuit breaker: short-circuit if host is currently open
             if self.retry.is_circuit_open(req.host):
                 raise RequestError(f"Circuit open for host {req.host}")
 
-            conn = self.pool.acquire(req.scheme, req.host, req.port, timeout=req.timeout, verify=verify, ssl_context=ssl_context)
+            conn = await self.pool.acquire(
+                req.scheme,
+                req.host,
+                req.port,
+                timeout=req.timeout,
+                verify=verify,
+                ssl_context=ssl_context,
+            )
             attempts = 0
             delays = list(self.retry.iter_delays())
+            request_start_time = time.time()
             while True:
                 attempts += 1
                 try:
-                    resp = conn.send_request(req, stream=stream)
+                    resp = await conn.send_request(req, stream=stream)
+                    # Set elapsed time
+                    resp._set_elapsed(time.time() - request_start_time)
+                    resp._history = response_history.copy()
                 except self.retry.retry_exceptions as exc:
                     # On exception, possibly retry; if we end up giving up, record failure for circuit breaker
                     if attempts > self.retry.max_attempts:
                         self.retry.record_failure(req.host)
-                        conn.close()
+                        await conn.close()
                         raise
                     if delays:
                         delay = delays.pop(0)
-                        self.logger.warning(f"Retrying due to exception: {exc}; attempt {attempts}")
-                        conn.close()
-                        self._sleep(delay)
-                        conn = self.pool.acquire(req.scheme, req.host, req.port, timeout=req.timeout, verify=verify, ssl_context=ssl_context)
+                        self.logger.warning(f"[async] Retrying due to exception: {exc}; attempt {attempts}")
+                        await conn.close()
+                        await self._sleep(delay)
+                        conn = await self.pool.acquire(
+                            req.scheme,
+                            req.host,
+                            req.port,
+                            timeout=req.timeout,
+                            verify=verify,
+                            ssl_context=ssl_context,
+                        )
                         continue
                     self.retry.record_failure(req.host)
-                    conn.close()
+                    await conn.close()
                     raise
 
-                # If we get a retryable status, either retry or record failure if giving up
                 if not stream and self.retry.should_retry_status(resp.status_code) and attempts < self.retry.max_attempts:
                     delay = delays.pop(0) if delays else 0
-                    self.logger.warning(f"Retrying due to status {resp.status_code}; attempt {attempts}")
-                    conn.close()
+                    self.logger.warning(f"[async] Retrying due to status {resp.status_code}; attempt {attempts}")
+                    await conn.close()
                     if delay:
-                        self._sleep(delay)
-                    conn = self.pool.acquire(req.scheme, req.host, req.port, timeout=req.timeout, verify=verify, ssl_context=ssl_context)
+                        await self._sleep(delay)
+                    conn = await self.pool.acquire(
+                        req.scheme,
+                        req.host,
+                        req.port,
+                        timeout=req.timeout,
+                        verify=verify,
+                        ssl_context=ssl_context,
+                    )
                     continue
 
                 # Success (or non-retryable status on final attempt): record success or failure
                 if not self.retry.should_retry_status(resp.status_code):
                     self.retry.record_success(req.host)
                 else:
-                    # we're here when attempts >= max_attempts and response is retryable
                     self.retry.record_failure(req.host)
                 break
 
             self.cookies.add_from_response(resp)
 
-            # Decide whether to keep the connection alive
             connection_header = resp.headers.get("Connection", resp.headers.get("connection", "keep-alive")).lower()
             should_close = connection_header == "close" or conn.closed
             if stream:
-                def _release_conn():
+                async def _release_conn():
                     if should_close:
-                        conn.close()
+                        await conn.close()
                     else:
-                        self.pool.release(conn)
+                        await self.pool.release(conn)
 
                 resp._release = _release_conn
                 return resp
 
             if should_close:
-                conn.close()
+                await conn.close()
             else:
-                self.pool.release(conn)
+                await self.pool.release(conn)
 
             if follow_redirects and not stream and resp.status_code in redirect_codes:
                 if redirects >= max_redirects:
                     raise RequestError("Too many redirects")
                 location = resp.headers.get("Location") or resp.headers.get("location")
                 if not location:
+                    resp._history = response_history
+                    resp._set_elapsed(time.time() - start_time)
                     return resp
                 redirects += 1
+                # Add to history before redirecting
+                response_history.append(resp)
                 new_url = urljoin(current_url, location)
                 if resp.status_code in {301, 302, 303}:
                     method = "GET"
                     current_content = None
+                    json_data = None  # Reset JSON data too
+                    form_data = None  # Reset form data too
                     current_headers = {k: v for k, v in current_headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
                 current_url = new_url
                 continue
 
+            # Set final elapsed time and history
+            resp._history = response_history
+            resp._set_elapsed(time.time() - start_time)
             return resp
 
-    def get(self, url: str, **kwargs) -> Response:
-        return self.request("GET", url, **kwargs)
+    async def get(self, url: str, **kwargs) -> Response:
+        return await self.request("GET", url, **kwargs)
 
-    def post(self, url: str, content: Optional[bytes] = None, **kwargs) -> Response:
-        return self.request("POST", url, content=content, **kwargs)
+    async def post(
+        self,
+        url: str,
+        content: Optional[bytes] = None,
+        json: Optional[Any] = None,
+        data: Optional[Dict[str, Union[str, int, float, None]]] = None,
+        **kwargs
+    ) -> Response:
+        return await self.request("POST", url, content=content, json=json, data=data, **kwargs)
+
+    async def put(
+        self,
+        url: str,
+        content: Optional[bytes] = None,
+        json: Optional[Any] = None,
+        data: Optional[Dict[str, Union[str, int, float, None]]] = None,
+        **kwargs
+    ) -> Response:
+        return await self.request("PUT", url, content=content, json=json, data=data, **kwargs)
+
+    async def delete(self, url: str, **kwargs) -> Response:
+        return await self.request("DELETE", url, **kwargs)
+
+    async def patch(
+        self,
+        url: str,
+        content: Optional[bytes] = None,
+        json: Optional[Any] = None,
+        data: Optional[Dict[str, Union[str, int, float, None]]] = None,
+        **kwargs
+    ) -> Response:
+        return await self.request("PATCH", url, content=content, json=json, data=data, **kwargs)
+
+    async def head(self, url: str, **kwargs) -> Response:
+        return await self.request("HEAD", url, **kwargs)
+
+    async def options(self, url: str, **kwargs) -> Response:
+        return await self.request("OPTIONS", url, **kwargs)
+
+    async def trace(self, url: str, **kwargs) -> Response:
+        return await self.request("TRACE", url, **kwargs)
+
+    @staticmethod
+    async def _sleep(delay: float) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    @staticmethod
+    def _build_url_with_params(url: str, params: Dict[str, Union[str, int, float, None]]) -> str:
+        """Build URL with query parameters."""
+        parsed = urlparse(url)
+        # Parse existing query parameters
+        existing_params = parse_qs(parsed.query, keep_blank_values=True)
+        # Convert to simple dict (take first value from each list)
+        existing_dict = {k: v[0] if v else "" for k, v in existing_params.items()}
+        # Update with new params (filter out None values)
+        new_params = {k: str(v) for k, v in params.items() if v is not None}
+        existing_dict.update(new_params)
+        # Build new query string
+        query_string = urlencode(existing_dict)
+        # Reconstruct URL
+        new_parsed = parsed._replace(query=query_string)
+        return urlunparse(new_parsed)
 
     def _inject_cookies(self, headers: Dict[str, str], url: str) -> Dict[str, str]:
         hdrs = dict(headers)
@@ -160,11 +312,43 @@ class Client:
             hdrs["Cookie"] = cookie_hdr
         return hdrs
 
-    def close(self) -> None:
-        self.pool.close()
+    async def close(self) -> None:
+        await self.pool.close()
 
+    async def __aenter__(self) -> "Client":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+    
     def __enter__(self) -> "Client":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
+        # Try to call close() - if it's sync (wrapped), it will work directly
+        # If it's async, it will return a coroutine
+        result = self.close()
+        
+        # Check if result is a coroutine
+        if asyncio.iscoroutine(result):
+            # Still async, need to run in loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, we can't use run_until_complete
+                    # Create a task instead
+                    task = asyncio.create_task(result)
+                    # This is not ideal, but we'll let it run in background
+                    return
+                else:
+                    loop.run_until_complete(result)
+            except RuntimeError:
+                # No event loop, create one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(result)
+                loop.close()
+        # If result is None or not a coroutine, it's already sync and done
+
+
+__all__ = ["Client"]

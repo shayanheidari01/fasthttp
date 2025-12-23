@@ -1,6 +1,6 @@
-from collections.abc import AsyncIterator as AsyncIterABC, Iterator as IterABC
+from collections.abc import AsyncIterator as AsyncIterABC
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Union, Iterable, AsyncIterable
+from typing import Dict, Optional, Union, AsyncIterable
 from urllib.parse import urlparse
 
 from .timeouts import Timeout
@@ -17,8 +17,6 @@ BodyType = Optional[
         bytearray,
         memoryview,
         str,
-        IterABC[bytes],
-        Iterable[bytes],
         AsyncIterABC[bytes],
         AsyncIterable[bytes],
     ]
@@ -32,6 +30,7 @@ class Request:
     headers: Dict[str, str] = field(default_factory=dict)
     content: BodyType = None
     timeout: Timeout = field(default_factory=Timeout)
+    _content_cache: Optional[bytes] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.timeout = Timeout.from_value(self.timeout)
@@ -64,12 +63,17 @@ class Request:
             self.headers["Transfer-Encoding"] = "chunked"
 
     def _content_bytes(self) -> bytes:
+        if self._content_cache is not None:
+            return self._content_cache
         if self.content is None:
-            return b""
+            self._content_cache = b""
+            return self._content_cache
         if isinstance(self.content, (bytes, bytearray, memoryview)):
-            return bytes(self.content)
+            self._content_cache = bytes(self.content)
+            return self._content_cache
         if isinstance(self.content, str):
-            return self.content.encode("utf-8")
+            self._content_cache = self.content.encode("utf-8")
+            return self._content_cache
         raise TypeError("Unsupported content type")
 
     def _is_streaming_body(self) -> bool:
@@ -77,16 +81,9 @@ class Request:
             return False
         if isinstance(self.content, (bytes, bytearray, memoryview, str)):
             return False
-        return isinstance(self.content, (IterABC, AsyncIterABC, Iterable, AsyncIterable))
+        return isinstance(self.content, (AsyncIterABC, AsyncIterable))
 
-    def iter_body(self) -> Optional[IterABC[bytes]]:
-        if self.content is None or not self._is_streaming_body():
-            return None
-        if isinstance(self.content, (IterABC, Iterable)) and not isinstance(self.content, (str, bytes, bytearray, memoryview)):
-            return iter(self.content)
-        return None
-
-    def aiter_body(self) -> Optional[AsyncIterABC[bytes]]:
+    def iter_body(self) -> Optional[AsyncIterABC[bytes]]:
         if self.content is None or not self._is_streaming_body():
             return None
         if isinstance(self.content, (AsyncIterABC, AsyncIterable)):

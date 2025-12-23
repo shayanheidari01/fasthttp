@@ -58,3 +58,32 @@ Thumbs.db
 # Misc
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Python
+*.so
+.Python
+*.pyo
+
+# Distribution / packaging
+egg/
+*.tar.gz
+.landscape.yaml
+
+# IDE
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/_build/
+
+# Local configuration
+.settings/
+
+# Logs
+*.log
+logs/
+
+# MyPy
+.dmypy.json
+dmypy.json
