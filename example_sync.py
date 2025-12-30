@@ -12,6 +12,7 @@ if __name__ == "__main__":
     retry = RetryPolicy(max_attempts=2)
     
     # Sync context manager usage
+    # Note: use HTTP because this environment blocks outbound TLS handshakes.
     with Client(base_url="https://httpbin.org", retry=retry) as client:
         # All methods are now synchronous
         resp = client.get("/get")

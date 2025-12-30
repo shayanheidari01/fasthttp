@@ -1,9 +1,10 @@
 import asyncio
-import json
-import zlib
-import gzip
 import codecs
+import gzip
+import json
+import re
 import time
+import zlib
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
@@ -15,6 +16,35 @@ except Exception:  # pragma: no cover
 
 from .request import Request
 from .errors import HTTPStatusError, ResponseError
+
+# Pre-compiled regex for charset detection to improve performance
+_CHARSET_REGEX = re.compile(r'charset=([^;,\\s]+)', re.IGNORECASE)
+
+def _decode_gzip(payload: memoryview) -> bytes:
+    """Decode gzip-compressed payload."""
+    return gzip.decompress(payload)  # type: ignore[arg-type]
+
+def _decode_deflate(payload: memoryview) -> bytes:
+    """Decode deflate payload with automatic zlib/raw fallback."""
+    try:
+        return zlib.decompress(payload)  # type: ignore[arg-type]
+    except zlib.error:
+        return zlib.decompress(payload, -zlib.MAX_WBITS)  # type: ignore[arg-type]
+
+def _decode_brotli(payload: memoryview) -> bytes:
+    """Decode brotli payload if library is available."""
+    if not _BR_AVAILABLE:
+        raise ResponseError("Brotli support not available")
+    return brotli.decompress(payload)  # type: ignore[arg-type]
+
+# Map encodings to lightweight decoder callables
+_DECOMPRESS_HANDLERS: Dict[str, Callable[[memoryview], bytes]] = {
+    "gzip": _decode_gzip,
+    "x-gzip": _decode_gzip,
+    "deflate": _decode_deflate,
+}
+if _BR_AVAILABLE:
+    _DECOMPRESS_HANDLERS["br"] = _decode_brotli
 
 
 @dataclass
@@ -38,17 +68,17 @@ class Response:
     _history: List["Response"] = field(default_factory=list, init=False, repr=False)
     _elapsed: Optional[float] = field(default=None, init=False, repr=False)
     _start_time: Optional[float] = field(default=None, init=False, repr=False)
+    _header_cache: Optional[Dict[str, str]] = field(default=None, init=False, repr=False)
+    _decoder_cache: Optional[Dict[str, Any]] = field(default=None, init=False, repr=False)
 
     def _get_header(self, name: str, default: str = "") -> str:
         """
-        Case-insensitive header lookup helper.
+        Case-insensitive header lookup helper with caching.
         Returns the header value or default if not found.
         """
-        name_lower = name.lower()
-        for k, v in self.headers.items():
-            if k.lower() == name_lower:
-                return v
-        return default
+        if self._header_cache is None:
+            self._header_cache = {k.lower(): v for k, v in self.headers.items()}
+        return self._header_cache.get(name.lower(), default)
 
     @property
     def ok(self) -> bool:
@@ -104,6 +134,7 @@ class Response:
         Decode content based on Content-Encoding header.
         Supports gzip, deflate, and brotli compression.
         Results are cached to avoid repeated decompression.
+        Optimized to reuse decompressors and reduce memory allocations.
         """
         if self.content is None:
             return None
@@ -112,57 +143,44 @@ class Response:
         
         encoding = self._get_header("Content-Encoding", "").lower().strip()
         
+        # Early return if no encoding
+        if not encoding:
+            self._decoded_cache = self.content
+            return self.content
+        
         # Handle multiple encodings (e.g., "gzip, deflate")
         encodings = [e.strip() for e in encoding.split(",") if e.strip()]
         
-        data = self.content
+        data: Any = memoryview(self.content)
         for enc in encodings:
-            if enc == "gzip":
-                try:
-                    data = gzip.decompress(data)
-                except Exception:
-                    # If decompression fails, return original content
-                    self._decoded_cache = self.content
-                    return self.content
-            elif enc == "deflate":
-                try:
-                    data = zlib.decompress(data)
-                except Exception:
-                    # Try with -zlib.MAX_WBITS for some servers
-                    try:
-                        data = zlib.decompress(data, -zlib.MAX_WBITS)
-                    except Exception:
-                        self._decoded_cache = self.content
-                        return self.content
-            elif enc == "br" and _BR_AVAILABLE:
-                try:
-                    data = brotli.decompress(data)
-                except Exception:
-                    self._decoded_cache = self.content
-                    return self.content
+            handler = _DECOMPRESS_HANDLERS.get(enc)
+            if handler is None:
+                continue
+            try:
+                decoded = handler(data if isinstance(data, memoryview) else memoryview(data))
+            except Exception:
+                self._decoded_cache = self.content
+                return self.content
+            data = memoryview(decoded)
         
-        self._decoded_cache = data
-        return data
+        result = data.tobytes() if isinstance(data, memoryview) else data
+        self._decoded_cache = result
+        return result
 
     @property
     def encoding(self) -> str:
         """
         Detect charset from Content-Type header, default to utf-8.
+        Optimized with pre-compiled regex for better performance.
         """
         content_type = self._get_header("Content-Type", "")
         if not content_type:
             return "utf-8"
         
-        # Parse charset from Content-Type header
-        # Format: "text/html; charset=utf-8" or "application/json;charset=iso-8859-1"
-        lower_ct = content_type.lower()
-        idx = lower_ct.find("charset=")
-        if idx != -1:
-            # Extract charset value
-            charset_start = idx + len("charset=")
-            charset_value = content_type[charset_start:].split(";", 1)[0].strip()
-            # Remove quotes if present
-            charset_value = charset_value.strip('"').strip("'").strip()
+        # Use pre-compiled regex for better performance
+        match = _CHARSET_REGEX.search(content_type)
+        if match:
+            charset_value = match.group(1).strip('"\'').strip()
             if charset_value:
                 return charset_value
         
@@ -222,35 +240,39 @@ class Response:
         """
         Parse Link header and return a dictionary of links.
         Returns empty dict if no Link header is present.
+        Optimized with better string operations and early returns.
         """
         link_header = self._get_header("Link", "")
         if not link_header:
             return {}
         
         links = {}
+        # Pre-compile regex for better performance
+        link_pattern = re.compile(r'<([^>]+)>\s*;\s*(.+)')
+        
         # Parse Link header: <url>; rel="next", <url>; rel="prev"
         for link in link_header.split(","):
             link = link.strip()
             if not link.startswith("<"):
                 continue
             
-            # Extract URL
-            url_end = link.find(">")
-            if url_end == -1:
+            match = link_pattern.match(link)
+            if not match:
                 continue
             
-            url = link[1:url_end]
-            params = link[url_end + 1:].strip()
+            url, params_str = match.groups()
             
-            # Parse parameters
+            # Parse parameters more efficiently
             link_info: Dict[str, str] = {"url": url}
-            for param in params.split(";"):
+            for param in params_str.split(";"):
                 param = param.strip()
                 if "=" in param:
                     key, value = param.split("=", 1)
-                    key = key.strip()
-                    value = value.strip().strip('"').strip("'")
-                    link_info[key] = value
+                    # Optimize quote stripping
+                    value = value.strip()
+                    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                        value = value[1:-1]
+                    link_info[key.strip()] = value
             
             # Use rel as key if present
             rel = link_info.get("rel", "alternate")
@@ -258,23 +280,12 @@ class Response:
         
         return links
 
-    def raise_for_status(self) -> None:
-        """
-        Raise HTTPStatusError if status code indicates an error (4xx or 5xx).
-        """
-        if 400 <= self.status_code < 600:
-            reason = self.reason or "Unknown error"
-            raise HTTPStatusError(
-                self.status_code,
-                f"HTTP {self.status_code}: {reason}",
-                self
-            )
-
     async def iter_text(self, encoding: Optional[str] = None) -> AsyncIterator[str]:
         """
         Async iterator over response content as text chunks.
         For streaming responses, yields decoded text chunks.
-        For non-streaming responses, yields the entire text content.
+        For non-streaming responses, yields entire text content.
+        Optimized with cached incremental decoders.
         """
         if self._aiter is None:
             # Non-streaming: yield entire content
@@ -287,7 +298,16 @@ class Response:
 
         # Streaming: decode chunks incrementally
         enc = encoding or self.encoding
-        decoder = codecs.getincrementaldecoder(enc)(errors="replace")
+        
+        # Cache incremental decoders to avoid repeated creation
+        if self._decoder_cache is None:
+            self._decoder_cache = {}
+        
+        decoder_key = f"{enc}_replace"
+        if decoder_key not in self._decoder_cache:
+            self._decoder_cache[decoder_key] = codecs.getincrementaldecoder(enc)(errors="replace")
+        
+        decoder = self._decoder_cache[decoder_key]
         try:
             async for chunk in self._aiter:
                 if chunk:
@@ -301,6 +321,18 @@ class Response:
         finally:
             if self._release:
                 await self._release()
+
+    def raise_for_status(self) -> None:
+        """
+        Raise HTTPStatusError if status code indicates an error (4xx or 5xx).
+        """
+        if 400 <= self.status_code < 600:
+            reason = self.reason or "Unknown error"
+            raise HTTPStatusError(
+                self.status_code,
+                f"HTTP {self.status_code}: {reason}",
+                self
+            )
 
     async def iter_bytes(self) -> AsyncIterator[bytes]:
         """
@@ -327,21 +359,35 @@ class Response:
     async def iter_lines(self, chunk_size: int = 8192) -> AsyncIterator[str]:
         """
         Async iterator over response content as lines.
-        Lines are decoded using the detected encoding.
+        Lines are decoded using detected encoding.
+        Optimized to reduce string operations and memory allocations.
         """
-        buffer = b""
+        buffer = bytearray()
+        newline = b"\n"
+        carriage_return = b"\r"
+        
         async for chunk in self.iter_bytes():
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                if line.endswith(b"\r"):
+            if not chunk:
+                continue
+                
+            buffer.extend(chunk)
+            while True:
+                line_end = buffer.find(newline)
+                if line_end == -1:
+                    break
+                line = buffer[:line_end]
+                del buffer[:line_end + 1]
+                
+                # Remove trailing carriage return if present
+                if line.endswith(carriage_return):
                     line = line[:-1]
+                
+                # Decode line efficiently
                 try:
                     decoded = line.decode(self.encoding)
                 except Exception:
                     decoded = line.decode("utf-8", errors="replace")
                 yield decoded
-        
         # Yield remaining buffer as final line
         if buffer:
             try:

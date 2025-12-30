@@ -1,5 +1,6 @@
 import asyncio
 import fasthttp
+import json as _json_module
 import logging
 import ssl
 import time
@@ -55,6 +56,8 @@ class Client:
         self.logger = logger or get_logger()
         self.cookies = cookies or CookieJar()
         self.user_agent = user_agent or "fasthttp/{}".format(fasthttp.__version__)
+        # Cache for header lookups to avoid repeated lowercase conversions
+        self._header_cache: Dict[int, Dict[str, str]] = {}
 
     async def request(
         self,
@@ -88,8 +91,6 @@ class Client:
         if json_data is not None:
             if content is not None or form_data is not None:
                 raise ValueError("Cannot specify 'content' or 'data' together with 'json'")
-            # Import json module with alias to avoid shadowing
-            import json as _json_module
             current_content = _json_module.dumps(json_data).encode("utf-8")
             current_headers = headers or {}
             if "content-type" not in {k.lower() for k in current_headers}:
@@ -114,7 +115,7 @@ class Client:
         while True:
             hdrs = self._inject_cookies(current_headers, current_url)
             # Add User-Agent if not present
-            if "user-agent" not in {k.lower() for k in hdrs}:
+            if not self._has_header(hdrs, "user-agent"):
                 hdrs["User-Agent"] = self.user_agent
             
             req = Request(
@@ -215,6 +216,7 @@ class Client:
             if follow_redirects and not stream and resp.status_code in redirect_codes:
                 if redirects >= max_redirects:
                     raise RequestError("Too many redirects")
+                # Use get with case-insensitive lookup for Location header
                 location = resp.headers.get("Location") or resp.headers.get("location")
                 if not location:
                     resp._history = response_history
@@ -229,7 +231,12 @@ class Client:
                     current_content = None
                     json_data = None  # Reset JSON data too
                     form_data = None  # Reset form data too
-                    current_headers = {k: v for k, v in current_headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
+                    # Optimize header filtering by creating new dict only when needed
+                    if current_headers:
+                        current_headers = {k: v for k, v in current_headers.items() 
+                                         if k.lower() not in ("content-length", "transfer-encoding")}
+                    else:
+                        current_headers = {}
                 current_url = new_url
                 continue
 
@@ -291,13 +298,23 @@ class Client:
     @staticmethod
     def _build_url_with_params(url: str, params: Dict[str, Union[str, int, float, None]]) -> str:
         """Build URL with query parameters."""
+        if not params:
+            return url
+            
         parsed = urlparse(url)
-        # Parse existing query parameters
-        existing_params = parse_qs(parsed.query, keep_blank_values=True)
-        # Convert to simple dict (take first value from each list)
-        existing_dict = {k: v[0] if v else "" for k, v in existing_params.items()}
+        # Parse existing query parameters only if needed
+        if parsed.query:
+            existing_params = parse_qs(parsed.query, keep_blank_values=True)
+            # Convert to simple dict (take first value from each list)
+            existing_dict = {k: v[0] if v else "" for k, v in existing_params.items()}
+        else:
+            existing_dict = {}
+        
         # Update with new params (filter out None values)
         new_params = {k: str(v) for k, v in params.items() if v is not None}
+        if not new_params:
+            return url
+            
         existing_dict.update(new_params)
         # Build new query string
         query_string = urlencode(existing_dict)
@@ -305,10 +322,21 @@ class Client:
         new_parsed = parsed._replace(query=query_string)
         return urlunparse(new_parsed)
 
+    def _has_header(self, headers: Dict[str, str], header_name: str) -> bool:
+        """Fast case-insensitive header lookup using cache."""
+        headers_id = id(headers)
+        if headers_id not in self._header_cache:
+            self._header_cache[headers_id] = {k.lower(): k for k in headers}
+        return header_name in self._header_cache[headers_id]
+    
     def _inject_cookies(self, headers: Dict[str, str], url: str) -> Dict[str, str]:
-        hdrs = dict(headers)
+        if not headers:
+            hdrs = {}
+        else:
+            hdrs = headers if isinstance(headers, dict) else dict(headers)
+        
         cookie_hdr = self.cookies.get_cookie_header(url) if self.cookies else None
-        if cookie_hdr and "cookie" not in {k.lower() for k in hdrs}:
+        if cookie_hdr and not self._has_header(hdrs, "cookie"):
             hdrs["Cookie"] = cookie_hdr
         return hdrs
 

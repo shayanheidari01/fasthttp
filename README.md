@@ -20,6 +20,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 - [Advanced Usage](#advanced-usage)
 - [Synchronous Wrapper](#synchronous-wrapper)
 - [Error Handling](#error-handling)
+- [Benchmarks](#benchmarks)
 - [Development](#development)
 - [Contributing](#contributing)
 - [License](#license)
@@ -378,6 +379,38 @@ with Client() as client:
 - `ResponseError` - Errors during response processing
 - `HTTPStatusError` - HTTP error status codes (4xx, 5xx)
 - `PoolError` - Connection pool errors
+
+## Benchmarks
+
+The repository ships with a heavy-load benchmarking harness that compares fasthttp against popular Python HTTP clients under identical settings.
+
+### How to run
+
+```bash
+python benchmark.py \
+  --url https://httpbin.org/get \
+  --duration 15 \
+  --concurrency 64 \
+  --body-size 1024 \
+  --warmup 10
+```
+
+Use `--help` to discover additional flags (custom headers, TLS toggle, payload sizes, latency sampling controls, etc.). Ensure `fasthttp`, `aiohttp`, `httpx`, and `requests` are installed in the active environment.
+
+### Latest results
+
+_Hardware/Network_: User laptop, residential network. Results may vary with different environments, servers, or payloads.
+
+| Library   | Requests | Success | Req/s | Avg Lat (ms) | P95 Lat (ms) | P99 Lat (ms) | Mbps |
+|-----------|----------|---------|------:|-------------:|-------------:|-------------:|-----:|
+| fasthttp  | 1.5K     | 1.5K    |    92 |        649.7 |       1635.6 |       2380.5 | 0.22 |
+| requests  | 1.2K     | 1.2K    |    64 |        812.7 |       2653.1 |       4668.8 | 0.17 |
+| aiohttp   | 1.1K     | 1.1K    |    63 |        937.2 |       2123.0 |       3039.7 | 0.16 |
+| httpx     | 0.5K     | 0.5K    |    23 |       1930.9 |       3438.8 |       5803.9 | 0.06 |
+
+Configuration: GET https://httpbin.org/get, 15s per client, concurrency=64, 1KB payload, TLS verification enabled, 10 warmup hits per client.
+
+> **Note:** fasthttp is under active development; rerun the benchmark after significant changes or on infrastructure that matches your production constraints for more representative numbers.
 
 ## Development
 
