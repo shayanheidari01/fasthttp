@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import gzip
+import hashlib
 import json
 import threading
 import time
@@ -7,8 +9,9 @@ from contextlib import contextmanager
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
+from typing import Dict, List
 
-from fasthttp import Client
+from fasthttp import Client, BasicAuth, DigestAuth, AuthBase
 from fasthttp.retry import RetryPolicy
 from fasthttp.errors import ResponseError, RequestError
 
@@ -20,6 +23,16 @@ except Exception:  # pragma: no cover
     BR_AVAILABLE = False
 
 
+BASIC_USERNAME = "basicuser"
+BASIC_PASSWORD = "basicpass"
+DIGEST_USERNAME = "digestuser"
+DIGEST_PASSWORD = "digestpass"
+API_KEY_SECRET = "secret-key-123"
+DIGEST_NONCE = "abcdef1234567890"
+DIGEST_REALM = "fasthttp-test"
+DIGEST_OPAQUE = "deadbeef"
+
+
 class TestHandler(BaseHTTPRequestHandler):
     retry_counter = 0
 
@@ -27,7 +40,40 @@ class TestHandler(BaseHTTPRequestHandler):
         parsed_path = urlparse(self.path)
         path = parsed_path.path
 
-        if path == "/gzip":
+        if path == "/basic-auth":
+            if not self._check_basic_auth():
+                self._send_basic_challenge()
+                return
+            body = b"basic-auth-ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/digest-auth":
+            if not self._check_digest_auth(self.command or "GET", parsed_path.path):
+                self._send_digest_challenge()
+                return
+            body = b"digest-auth-ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/custom-auth":
+            api_key = self.headers.get("X-API-Key")
+            if api_key != API_KEY_SECRET:
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = b"custom-auth-ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/gzip":
             payload = json.dumps({"hello": "world"}).encode("utf-8")
             body = gzip.compress(payload)
             self.send_response(200)
@@ -258,6 +304,98 @@ class TestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_basic_challenge(self) -> None:
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="fasthttp-basic"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_digest_challenge(self) -> None:
+        header = (
+            f'Digest realm="{DIGEST_REALM}", '
+            f'nonce="{DIGEST_NONCE}", '
+            'algorithm=MD5, '
+            'qop="auth", '
+            f'opaque="{DIGEST_OPAQUE}"'
+        )
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", header)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _check_basic_auth(self) -> bool:
+        header = self.headers.get("Authorization")
+        if not header:
+            return False
+        expected = "Basic " + base64.b64encode(f"{BASIC_USERNAME}:{BASIC_PASSWORD}".encode("latin1")).decode("ascii")
+        return header == expected
+
+    def _check_digest_auth(self, method: str, uri: str) -> bool:
+        header = self.headers.get("Authorization", "")
+        if not header.lower().startswith("digest"):
+            return False
+        params = self._parse_auth_params(header)
+        required = ["username", "realm", "nonce", "uri", "response"]
+        if any(key not in params for key in required):
+            return False
+        if params["username"] != DIGEST_USERNAME or params["realm"] != DIGEST_REALM:
+            return False
+        if params["nonce"] != DIGEST_NONCE or params["uri"] != uri:
+            return False
+        if params.get("opaque") and params["opaque"] != DIGEST_OPAQUE:
+            return False
+        ha1 = hashlib.md5(f"{DIGEST_USERNAME}:{DIGEST_REALM}:{DIGEST_PASSWORD}".encode()).hexdigest()
+        ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()
+        qop = params.get("qop")
+        if qop:
+            nc = params.get("nc")
+            cnonce = params.get("cnonce")
+            if not nc or not cnonce:
+                return False
+            expected = hashlib.md5(f"{ha1}:{DIGEST_NONCE}:{nc}:{cnonce}:{qop}:{ha2}".encode()).hexdigest()
+        else:
+            expected = hashlib.md5(f"{ha1}:{DIGEST_NONCE}:{ha2}".encode()).hexdigest()
+        return params.get("response") == expected
+
+    def _parse_auth_params(self, header: str) -> Dict[str, str]:
+        params: Dict[str, str] = {}
+        if not header:
+            return params
+        parts = header.split(" ", 1)
+        value = parts[1] if len(parts) == 2 else header
+        current: List[str] = []
+        in_quotes = False
+        escape = False
+        tuples = []
+        for ch in value:
+            if ch == '"' and not escape:
+                in_quotes = not in_quotes
+            if ch == "," and not in_quotes:
+                item = "".join(current).strip()
+                if item:
+                    tuples.append(item)
+                current = []
+            else:
+                current.append(ch)
+            if ch == "\\" and not escape:
+                escape = True
+            else:
+                escape = False
+        tail = "".join(current).strip()
+        if tail:
+            tuples.append(tail)
+        for item in tuples:
+            if "=" not in item:
+                continue
+            k, v = item.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if v.startswith('"') and v.endswith('"'):
+                v = v[1:-1]
+            v = v.replace('\\"', '"')
+            params[k] = v
+        return params
+
     def log_message(self, format, *args):  # pragma: no cover
         return
 
@@ -416,6 +554,67 @@ async def test_cookie_persistence(client: Client) -> None:
     await client.get("/set-cookie")
     resp = await client.get("/needs-cookie")
     assert "token=abc" in resp.text()
+
+
+async def test_basic_auth_support(client: Client) -> None:
+    """Ensure tuple-based Basic Auth works."""
+    async with Client(base_url=client.base_url, auth=(BASIC_USERNAME, BASIC_PASSWORD)) as authed:
+        resp = await authed.get("/basic-auth")
+    assert resp.status_code == 200
+    assert resp.text() == "basic-auth-ok"
+
+
+async def test_digest_auth_support(client: Client) -> None:
+    """Ensure Digest Auth handler performs challenge/response automatically."""
+    digest = DigestAuth(DIGEST_USERNAME, DIGEST_PASSWORD)
+    resp = await client.get("/digest-auth", auth=digest)
+    assert resp.status_code == 200
+    assert resp.text() == "digest-auth-ok"
+
+
+async def test_custom_auth_handler(client: Client) -> None:
+    """Verify custom AuthBase subclasses can inject headers."""
+
+    class APIKeyAuth(AuthBase):
+        def __init__(self, key: str) -> None:
+            self.key = key
+
+        def _on_request(self, request):
+            request.headers["X-API-Key"] = self.key
+
+    resp = await client.get("/custom-auth", auth=APIKeyAuth(API_KEY_SECRET))
+    assert resp.status_code == 200
+    assert resp.text() == "custom-auth-ok"
+
+
+async def test_response_hook_called(client: Client) -> None:
+    """Ensure per-request response hooks run."""
+    seen = []
+
+    def hook(resp):
+        seen.append(resp.status_code)
+
+    resp = await client.get("/gzip", hooks={"response": hook})
+    assert resp.status_code == 200
+    assert seen == [200]
+
+
+async def test_async_hook_and_response_replacement(client: Client) -> None:
+    """Hooks can be async and may return replacement responses."""
+
+    async def hook(resp):
+        # Replace body with uppercase text to prove the hook ran
+        new = Response(
+            status_code=resp.status_code,
+            headers=resp.headers,
+            content=resp.text().upper().encode("utf-8"),
+            reason=resp.reason,
+            request=resp.request,
+        )
+        return new
+
+    resp = await client.get("/gzip", hooks={"response": hook})
+    assert resp.text() == resp.text().upper()
 
 
 async def test_iter_text(client: Client) -> None:

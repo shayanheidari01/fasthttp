@@ -25,6 +25,11 @@ def async_to_sync(obj, name):
     Wrapped synchronous function or generator.
     """
     function = getattr(obj, name)
+    is_coroutine_function = inspect.iscoroutinefunction(function)
+    is_asyncgen_function = inspect.isasyncgenfunction(function)
+
+    if not (is_coroutine_function or is_asyncgen_function):
+        return
 
     try:
         main_loop = asyncio.get_event_loop()
@@ -54,8 +59,37 @@ def async_to_sync(obj, name):
             yield item
 
     @functools.wraps(function)
+    def resolve_coroutine(coroutine, loop, run_inline):
+        if coroutine is None or not inspect.iscoroutine(coroutine):
+            return coroutine
+
+        if run_inline:
+            if loop.is_running():
+                return coroutine
+            return loop.run_until_complete(coroutine)
+
+        if loop.is_running():
+
+            async def coro_wrapper():
+                return await asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(coroutine, main_loop)
+                )
+
+            return coro_wrapper()
+
+        return asyncio.run_coroutine_threadsafe(coroutine, main_loop).result()
+
+    def resolve_asyncgen(generator, loop, run_inline):
+        if generator is None or not inspect.isasyncgen(generator):
+            return generator
+
+        if loop.is_running():
+            return generator
+
+        return async_to_sync_gen(generator, loop if run_inline else main_loop, run_inline)
+
     def async_to_sync_wrap(*args, **kwargs):
-        coroutine = function(*args, **kwargs)
+        result = function(*args, **kwargs)
 
         try:
             loop = asyncio.get_event_loop()
@@ -63,38 +97,18 @@ def async_to_sync(obj, name):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        if (
+        run_inline = (
             threading.current_thread() is threading.main_thread()
             or not main_loop.is_running()
-        ):
-            if loop.is_running():
-                return coroutine
-            else:
-                if inspect.iscoroutine(coroutine):
-                    return loop.run_until_complete(coroutine)
+        )
 
-                if inspect.isasyncgen(coroutine):
-                    return async_to_sync_gen(coroutine, loop, True)
-        else:
-            if inspect.iscoroutine(coroutine):
-                if loop.is_running():
+        if is_coroutine_function:
+            return resolve_coroutine(result, loop, run_inline)
 
-                    async def coro_wrapper():
-                        return await asyncio.wrap_future(
-                            asyncio.run_coroutine_threadsafe(coroutine, main_loop)
-                        )
+        if is_asyncgen_function:
+            return resolve_asyncgen(result, loop, run_inline)
 
-                    return coro_wrapper()
-                else:
-                    return asyncio.run_coroutine_threadsafe(
-                        coroutine, main_loop
-                    ).result()
-
-            if inspect.isasyncgen(coroutine):
-                if loop.is_running():
-                    return coroutine
-                else:
-                    return async_to_sync_gen(coroutine, main_loop, False)
+        return result
 
     setattr(obj, name, async_to_sync_wrap)
 

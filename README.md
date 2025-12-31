@@ -37,7 +37,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 - **Circuit Breaker**: Optional circuit breaker pattern to prevent cascading failures
 - **Cookie Management**: Full cookie jar support
 - **HTTP/1.1 Compliant**: Properly implements the HTTP/1.1 specification
-- **Lightweight**: Minimal dependencies, built on the `h11` library
+- **Lightweight**: Minimal dependencies, built on the `h11pro` library
 
 ## Installation
 
@@ -247,6 +247,67 @@ with Client(cookies=jar) as client:
 ```
 
 ## Advanced Usage
+
+### Authentication
+
+fasthttp ships with pluggable authentication handlers that mirror the HTTP exchanges performed by web servers.
+
+```python
+from fasthttp import Client, BasicAuth, DigestAuth, AuthBase
+
+# 1) Basic authentication (tuple shorthand)
+with Client(base_url="https://api.example.com", auth=("user", "pass")) as client:
+    resp = client.get("/basic-auth")
+    resp.raise_for_status()
+
+# 2) Digest authentication
+digest = DigestAuth("digest-user", "digest-pass")
+with Client(base_url="https://api.example.com") as client:
+    resp = client.get("/digest-endpoint", auth=digest)
+    resp.raise_for_status()
+
+# 3) Custom authentication by subclassing AuthBase
+class APIKeyAuth(AuthBase):
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+    def _on_request(self, request):
+        request.headers["X-API-Key"] = self.key
+
+with Client(base_url="https://api.example.com") as client:
+    resp = client.get("/custom-auth", auth=APIKeyAuth("my-secret"))
+    resp.raise_for_status()
+```
+
+Authentication handlers receive every outgoing request (`on_request`) and can optionally inspect responses (`on_response`) to perform challenge/response flows (Digest auth does this automatically). You can pass the handler globally via `Client(..., auth=...)` or per-call via `client.get(..., auth=...)`.
+
+### Response Hooks
+
+fasthttp exposes a `hooks` argument mirroring the Requests API so you can register callbacks that observe (or replace) responses. Hooks can be provided globally when instantiating `Client` or passed for individual requests:
+
+```python
+from fasthttp import Client
+
+def log_status(resp):
+    print("Got status:", resp.status_code)
+
+async def uppercase_hook(resp):
+    # Hooks may be async and may return a replacement Response
+    from fasthttp import Response
+    return Response(
+        status_code=resp.status_code,
+        headers=resp.headers,
+        content=resp.text().upper().encode("utf-8"),
+        reason=resp.reason,
+        request=resp.request,
+    )
+
+with Client(base_url="https://api.example.com", hooks={"response": log_status}) as client:
+    resp = client.get("/resource", hooks={"response": [log_status, uppercase_hook]})
+    resp.raise_for_status()
+```
+
+Hook callbacks receive the `Response` object, may be sync or async, and can return either `None` (no change) or a new `Response` instance which replaces the current one. Multiple hooks can be registered per event; `response` is currently the supported event.
 
 ### Streaming Large Responses
 

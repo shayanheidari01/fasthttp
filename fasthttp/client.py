@@ -2,9 +2,10 @@ import asyncio
 import fasthttp
 import json as _json_module
 import logging
+import inspect
 import ssl
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Awaitable, TypeVar, Tuple, Callable, Sequence
 from urllib.parse import urlencode, urljoin, urlparse, urlunparse, parse_qs
 
 from .pool import ConnectionPool
@@ -14,6 +15,14 @@ from .retry import RetryPolicy
 from .logging import get_logger
 from .cookies import CookieJar
 from .errors import RequestError
+from .timeouts import Timeout
+from .auth import AuthBase, coerce_auth
+
+T = TypeVar("T")
+HookFunc = Callable[[Response], Union[Optional[Response], Awaitable[Optional[Response]]]]
+HookValue = Union[HookFunc, Sequence[HookFunc]]
+HooksInput = Dict[str, HookValue]
+HooksMap = Dict[str, List[HookFunc]]
 
 
 class Client:
@@ -48,6 +57,8 @@ class Client:
         logger: Optional[logging.Logger] = None,
         cookies: Optional[CookieJar] = None,
         user_agent: Optional[str] = None,
+        auth: Optional[Union[Tuple[str, str], AuthBase]] = None,
+        hooks: Optional[HooksInput] = None,
     ) -> None:
         self.base_url = base_url
         self.pool = pool or ConnectionPool()
@@ -56,6 +67,8 @@ class Client:
         self.logger = logger or get_logger()
         self.cookies = cookies or CookieJar()
         self.user_agent = user_agent or "fasthttp/{}".format(fasthttp.__version__)
+        self.auth = coerce_auth(auth)
+        self._hooks = self._normalize_hooks(hooks)
         # Cache for header lookups to avoid repeated lowercase conversions
         self._header_cache: Dict[int, Dict[str, str]] = {}
 
@@ -75,6 +88,8 @@ class Client:
         stream: bool = False,
         follow_redirects: bool = True,
         max_redirects: int = 5,
+        auth: Optional[Union[Tuple[str, str], AuthBase]] = None,
+        hooks: Optional[HooksInput] = None,
     ) -> Response:
         # Build URL with query parameters
         current_url = urljoin(self.base_url, url) if self.base_url else url
@@ -111,6 +126,27 @@ class Client:
         redirects = 0
         response_history: List[Response] = []
         start_time = time.time()
+        auth_handler = coerce_auth(auth) if auth is not None else self.auth
+        hooks_map = self._merge_hooks(hooks)
+
+        def _remaining_total(timeout_cfg: Timeout) -> Optional[float]:
+            total = timeout_cfg.total
+            if total is None:
+                return None
+            elapsed = time.time() - start_time
+            remaining = total - elapsed
+            return max(0.0, remaining)
+
+        async def _run_with_total(awaitable: Awaitable[T], timeout_cfg: Timeout) -> T:
+            remaining = _remaining_total(timeout_cfg)
+            if remaining is None:
+                return await awaitable
+            if remaining <= 0:
+                raise RequestError("Total timeout exceeded")
+            try:
+                return await asyncio.wait_for(awaitable, timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                raise RequestError("Total timeout exceeded") from exc
 
         while True:
             hdrs = self._inject_cookies(current_headers, current_url)
@@ -125,17 +161,23 @@ class Client:
                 content=current_content,
                 timeout=resolved_timeout,
             )
+            if auth_handler:
+                await auth_handler.on_request(req)
             # Circuit breaker: short-circuit if host is currently open
             if self.retry.is_circuit_open(req.host):
                 raise RequestError(f"Circuit open for host {req.host}")
 
-            conn = await self.pool.acquire(
-                req.scheme,
-                req.host,
-                req.port,
-                timeout=req.timeout,
-                verify=verify,
-                ssl_context=ssl_context,
+            timeout_cfg = req.timeout
+            conn = await _run_with_total(
+                self.pool.acquire(
+                    req.scheme,
+                    req.host,
+                    req.port,
+                    timeout=timeout_cfg,
+                    verify=verify,
+                    ssl_context=ssl_context,
+                ),
+                timeout_cfg,
             )
             attempts = 0
             delays = list(self.retry.iter_delays())
@@ -143,7 +185,7 @@ class Client:
             while True:
                 attempts += 1
                 try:
-                    resp = await conn.send_request(req, stream=stream)
+                    resp = await _run_with_total(conn.send_request(req, stream=stream), timeout_cfg)
                     # Set elapsed time
                     resp._set_elapsed(time.time() - request_start_time)
                     resp._history = response_history.copy()
@@ -157,14 +199,17 @@ class Client:
                         delay = delays.pop(0)
                         self.logger.warning(f"[async] Retrying due to exception: {exc}; attempt {attempts}")
                         await conn.close()
-                        await self._sleep(delay)
-                        conn = await self.pool.acquire(
-                            req.scheme,
-                            req.host,
-                            req.port,
-                            timeout=req.timeout,
-                            verify=verify,
-                            ssl_context=ssl_context,
+                        await _run_with_total(self._sleep(delay), timeout_cfg)
+                        conn = await _run_with_total(
+                            self.pool.acquire(
+                                req.scheme,
+                                req.host,
+                                req.port,
+                                timeout=timeout_cfg,
+                                verify=verify,
+                                ssl_context=ssl_context,
+                            ),
+                            timeout_cfg,
                         )
                         continue
                     self.retry.record_failure(req.host)
@@ -177,13 +222,16 @@ class Client:
                     await conn.close()
                     if delay:
                         await self._sleep(delay)
-                    conn = await self.pool.acquire(
-                        req.scheme,
-                        req.host,
-                        req.port,
-                        timeout=req.timeout,
-                        verify=verify,
-                        ssl_context=ssl_context,
+                    conn = await _run_with_total(
+                        self.pool.acquire(
+                            req.scheme,
+                            req.host,
+                            req.port,
+                            timeout=timeout_cfg,
+                            verify=verify,
+                            ssl_context=ssl_context,
+                        ),
+                        timeout_cfg,
                     )
                     continue
 
@@ -196,6 +244,18 @@ class Client:
 
             self.cookies.add_from_response(resp)
 
+            if auth_handler:
+                new_req = await auth_handler.on_response(req, resp)
+                if new_req is not None:
+                    response_history.append(resp)
+                    await conn.close()
+                    method = new_req.method
+                    current_url = new_req.url
+                    current_headers = dict(new_req.headers)
+                    current_content = new_req.content
+                    resolved_timeout = new_req.timeout
+                    continue
+
             connection_header = resp.headers.get("Connection", resp.headers.get("connection", "keep-alive")).lower()
             should_close = connection_header == "close" or conn.closed
             if stream:
@@ -206,6 +266,7 @@ class Client:
                         await self.pool.release(conn)
 
                 resp._release = _release_conn
+                resp = await self._dispatch_hooks("response", hooks_map, resp)
                 return resp
 
             if should_close:
@@ -243,7 +304,59 @@ class Client:
             # Set final elapsed time and history
             resp._history = response_history
             resp._set_elapsed(time.time() - start_time)
+            resp = await self._dispatch_hooks("response", hooks_map, resp)
             return resp
+
+    def _merge_hooks(self, request_hooks: Optional[HooksInput]) -> HooksMap:
+        hooks: HooksMap = {event: funcs.copy() for event, funcs in self._hooks.items()}
+        if not request_hooks:
+            return hooks
+        request_map = self._normalize_hooks(request_hooks)
+        for event, funcs in request_map.items():
+            hooks.setdefault(event, []).extend(funcs)
+        return hooks
+
+    def _normalize_hooks(self, hooks_input: Optional[HooksInput]) -> HooksMap:
+        hooks: HooksMap = {}
+        if not hooks_input:
+            return hooks
+
+        def _coerce(value: HookValue) -> List[HookFunc]:
+            if callable(value):
+                return [value]  # type: ignore[return-value]
+            if isinstance(value, (list, tuple)):
+                result: List[HookFunc] = []
+                for item in value:
+                    if not callable(item):
+                        raise TypeError("Hook entries must be callables")
+                    result.append(item)
+                return result
+            raise TypeError("hooks must be callables or sequences of callables")
+
+        for event, value in hooks_input.items():
+            if value is None:
+                continue
+            coerced = _coerce(value)
+            if not coerced:
+                continue
+            hooks.setdefault(event, []).extend(coerced)
+        return hooks
+
+    async def _dispatch_hooks(self, event: str, hooks_map: HooksMap, response: Response) -> Response:
+        hook_funcs = hooks_map.get(event)
+        if not hook_funcs:
+            return response
+
+        current = response
+        for hook in hook_funcs:
+            result = hook(current)
+            if inspect.isawaitable(result):
+                result = await result
+            if isinstance(result, Response):
+                current = result
+            elif result is not None:
+                raise TypeError("Hook functions must return None or Response instances")
+        return current
 
     async def get(self, url: str, **kwargs) -> Response:
         return await self.request("GET", url, **kwargs)

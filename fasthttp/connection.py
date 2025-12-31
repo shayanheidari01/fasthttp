@@ -4,7 +4,7 @@ import time
 from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
-import h11
+import h11pro as h11
 
 from .errors import RequestError, ResponseError
 from .request import Request
@@ -32,7 +32,7 @@ def _get_ssl_context(verify: bool = True) -> ssl.SSLContext:
 
 class Connection:
     """
-    Async HTTP/1.1 connection built on asyncio streams + h11.
+    Async HTTP/1.1 connection built on asyncio streams + h11pro.
 
     We aggressively reuse buffers and caches so request/response cycles
     stay CPU + memory friendly even under heavy load.
