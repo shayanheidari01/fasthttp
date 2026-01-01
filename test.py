@@ -5,15 +5,28 @@ import hashlib
 import json
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fasthttp import Client, BasicAuth, DigestAuth, AuthBase
 from fasthttp.retry import RetryPolicy
-from fasthttp.errors import ResponseError, RequestError
+from fasthttp.errors import ResponseError, RequestError, WebSocketHandshakeError
+from fasthttp.connection import READ_BUFFER_SIZE
+from fasthttp.wsproto import WSConnection
+from fasthttp.wsproto.connection import ConnectionType
+from fasthttp.wsproto.events import (
+    AcceptConnection,
+    BytesMessage,
+    CloseConnection,
+    Ping,
+    Pong,
+    RejectConnection,
+    Request as WSRequestEvent,
+    TextMessage,
+)
 
 try:
     import brotli
@@ -411,6 +424,60 @@ def run_server():
     finally:
         server.shutdown()
         thread.join()
+
+
+async def _ws_send(writer: asyncio.StreamWriter, data: bytes) -> None:
+    if not data:
+        return
+    writer.write(data)
+    await writer.drain()
+
+
+async def _handle_ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    ws = WSConnection(ConnectionType.SERVER)
+    try:
+        while True:
+            data = await reader.read(READ_BUFFER_SIZE)
+            if not data:
+                ws.receive_data(None)
+                break
+            ws.receive_data(data)
+            for event in ws.events():
+                if isinstance(event, WSRequestEvent):
+                    target = event.target
+                    if target == "/ws/reject":
+                        payload = ws.send(RejectConnection(status_code=403, headers=[(b"content-length", b"0")]))
+                        await _ws_send(writer, payload)
+                        return
+                    accept = AcceptConnection()
+                    await _ws_send(writer, ws.send(accept))
+                elif isinstance(event, TextMessage):
+                    await _ws_send(writer, ws.send(TextMessage(data=event.data)))
+                elif isinstance(event, BytesMessage):
+                    await _ws_send(writer, ws.send(BytesMessage(data=bytes(event.data))))
+                elif isinstance(event, Ping):
+                    await _ws_send(writer, ws.send(event.response()))
+                elif isinstance(event, CloseConnection):
+                    await _ws_send(writer, ws.send(event.response()))
+                    return
+    except Exception:
+        pass
+    finally:
+        writer.close()
+        with suppress(Exception):
+            await writer.wait_closed()
+
+
+@asynccontextmanager
+async def run_ws_server():
+    server = await asyncio.start_server(_handle_ws_client, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    base_url = f"ws://127.0.0.1:{port}"
+    try:
+        yield base_url
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 async def test_gzip_decoding(client: Client) -> None:
@@ -1049,6 +1116,29 @@ async def test_base_url_with_params(client: Client) -> None:
     assert resp.request.url.startswith(client.base_url)
 
 
+async def test_websocket_echo(ws_url: str) -> None:
+    async with Client() as client:
+        ws = await client.websocket(f"{ws_url}/ws/echo")
+        async with ws:
+            await ws.send_text("hello-ws")
+            text = await ws.recv()
+            assert text == "hello-ws"
+
+            payload = b"\x00\x01binary"
+            await ws.send_bytes(payload)
+            received = await ws.recv()
+            assert received == payload
+
+
+async def test_websocket_rejection(ws_url: str) -> None:
+    async with Client() as client:
+        try:
+            await client.websocket(f"{ws_url}/ws/reject")
+        except WebSocketHandshakeError:
+            return
+        raise AssertionError("Expected WebSocketHandshakeError for rejected handshake")
+
+
 async def run_all_tests() -> None:
     with run_server() as base_url:
         retry = RetryPolicy(max_attempts=2)
@@ -1105,11 +1195,20 @@ async def run_all_tests() -> None:
             ]
             for test_fn in tests:
                 await test_fn(client)
-                print(f"[OK] {test_fn.__name__}")
-        
-        # Run tests that don't need the client parameter
-        await test_base_url_without_base_url()
-        print(f"[OK] {test_base_url_without_base_url.__name__}")
+            print(f"[OK] {test_fn.__name__}")
+    
+    # Run tests that don't need the client parameter
+    await test_base_url_without_base_url()
+    print(f"[OK] {test_base_url_without_base_url.__name__}")
+
+    async with run_ws_server() as ws_base_url:
+        ws_tests = [
+            test_websocket_echo,
+            test_websocket_rejection,
+        ]
+        for test_fn in ws_tests:
+            await test_fn(ws_base_url)
+            print(f"[OK] {test_fn.__name__}")
     
     print("All tests completed successfully.")
 

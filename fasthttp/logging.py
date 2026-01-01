@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 
 def get_logger(name: str = "fasthttp", level: int = logging.INFO) -> logging.Logger:

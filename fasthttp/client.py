@@ -16,6 +16,7 @@ from .logging import get_logger
 from .cookies import CookieJar
 from .errors import RequestError
 from .timeouts import Timeout
+from .websocket import WebSocket
 from .auth import AuthBase, coerce_auth
 
 T = TypeVar("T")
@@ -403,6 +404,36 @@ class Client:
     async def trace(self, url: str, **kwargs) -> Response:
         return await self.request("TRACE", url, **kwargs)
 
+    async def websocket(
+        self,
+        url: str,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        subprotocols: Optional[Sequence[str]] = None,
+        extensions: Optional[Sequence] = None,
+        timeout: Optional[Union[Timeout, float, int]] = None,
+        verify: bool = True,
+        ssl_context: Optional[ssl.SSLContext] = None,
+    ) -> WebSocket:
+        """
+        Establish a WebSocket connection using the client's defaults.
+
+        :returns: WebSocket instance
+        """
+        target_url = self._build_websocket_url(url)
+        timeout_source: Union[Timeout, float, int, None]
+        timeout_source = timeout if timeout is not None else self.timeout
+        timeout_cfg = Timeout.from_value(timeout_source)
+        return await WebSocket.connect(
+            target_url,
+            headers=headers,
+            subprotocols=subprotocols,
+            extensions=extensions,
+            timeout=timeout_cfg,
+            verify=verify,
+            ssl_context=ssl_context,
+        )
+
     @staticmethod
     async def _sleep(delay: float) -> None:
         if delay > 0:
@@ -434,6 +465,23 @@ class Client:
         # Reconstruct URL
         new_parsed = parsed._replace(query=query_string)
         return urlunparse(new_parsed)
+
+    def _build_websocket_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.scheme in ("ws", "wss"):
+            return url
+        if parsed.scheme in ("http", "https"):
+            scheme = "wss" if parsed.scheme == "https" else "ws"
+            return parsed._replace(scheme=scheme).geturl()
+        if not parsed.scheme and self.base_url:
+            base = urlparse(self.base_url)
+            combined = urljoin(self.base_url, url)
+            combined_parsed = urlparse(combined)
+            scheme = "wss" if base.scheme == "https" else "ws"
+            return combined_parsed._replace(scheme=scheme).geturl()
+        raise ValueError(
+            "WebSocket URL must be absolute or the client must be initialized with base_url"
+        )
 
     def _has_header(self, headers: Dict[str, str], header_name: str) -> bool:
         """Fast case-insensitive header lookup using cache."""

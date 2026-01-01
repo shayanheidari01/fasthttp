@@ -1,3 +1,6 @@
+from typing import Optional
+
+
 class FastHTTPError(Exception):
     """Base exception for the fasthttp package."""
 
@@ -14,7 +17,43 @@ class PoolError(FastHTTPError):
     """Raised when the connection pool cannot provide a connection."""
 
 
-from typing import Optional
+class WebSocketError(FastHTTPError):
+    """Base class for WebSocket-related errors."""
+
+
+class WebSocketHandshakeError(WebSocketError):
+    """Raised when the WebSocket HTTP upgrade handshake fails."""
+
+
+class WebSocketClosed(WebSocketError):
+    """Raised when operations are attempted on a closed WebSocket."""
+
+    def __init__(self, code: int, reason: Optional[str] = None) -> None:
+        self.code = code
+        self.reason = reason
+        message = f"WebSocket closed (code={code}, reason={reason or 'none'})"
+        super().__init__(message)
+
+
+class WebSocketProtocolError(WebSocketError):
+    """Raised when protocol invariants are violated."""
+
+
+class WebSocketMessageTypeError(WebSocketError):
+    """Raised when a received frame type does not match what was expected."""
+
+    def __init__(self, expected: str, actual: str) -> None:
+        message = f"Expected {expected} WebSocket message but received {actual}"
+        super().__init__(message)
+        self.expected = expected
+        self.actual = actual
+
+
+class WebSocketDecodeError(WebSocketError):
+    """Raised when frame payloads cannot be decoded into the requested format."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class HTTPStatusError(ResponseError):

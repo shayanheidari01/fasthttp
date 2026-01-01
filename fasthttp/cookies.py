@@ -339,7 +339,7 @@ class CookieJar:
             parsed_url = urlparse(url)
             host = parsed_url.hostname
             path = parsed_url.path or "/"
-            secure = parsed_url.scheme == "https"
+            secure = parsed_url.scheme in ("https", "wss")
             self._url_cache[url] = (host, path, secure)
 
         if not host:

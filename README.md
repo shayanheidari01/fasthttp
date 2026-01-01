@@ -17,6 +17,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
   - [Timeouts](#timeouts)
   - [Retry Policy](#retry-policy)
   - [Cookies](#cookies)
+- [WebSocket Client](#websocket-client)
 - [Advanced Usage](#advanced-usage)
 - [Synchronous Wrapper](#synchronous-wrapper)
 - [Error Handling](#error-handling)
@@ -244,6 +245,79 @@ jar.set("session_id", "abc123", domain="example.com", path="/", secure=True)
 
 with Client(cookies=jar) as client:
     resp = client.get("https://example.com/protected")
+```
+
+## WebSocket Client
+
+fasthttp ships with a lightweight WebSocket client powered by [wsproto](https://github.com/python-hyper/wsproto). It integrates with the HTTP client's timeout settings, supports the async context-manager pattern, and offers helpers for text, binary, and JSON payloads.
+
+### Quick example
+
+```python
+import asyncio
+from fasthttp import WebSocket
+
+async def main():
+    async with WebSocket.connect("wss://echo.websocket.org") as ws:
+        await ws.send_text("hello")
+        print("Text echo:", await ws.recv_text())
+
+        await ws.send_bytes(b"\x00\x01")
+        print("Binary echo:", await ws.recv_bytes())
+
+        await ws.send_json({"ping": True})
+        try:
+            print("JSON echo:", await ws.recv_json())
+        except WebSocketDecodeError:
+            print("Peer did not return JSON.")
+
+asyncio.run(main())
+```
+
+### API overview
+
+| Method | Description |
+| ------ | ----------- |
+| `WebSocket.connect(url, *, headers=None, subprotocols=None, extensions=None, timeout=None, verify=True, ssl_context=None)` | Returns an awaitable/context-manager connector that establishes the WebSocket handshake. |
+| `send_text(str, *, final=True)` / `send_bytes(bytes, *, final=True)` / `send_json(obj, *, dumps=None)` | Send text, binary, or JSON frames. |
+| `recv()` | Receive the next complete message (returns `str` for text, `bytes` for binary). |
+| `recv_text()` / `recv_bytes()` / `recv_json(*, loads=None)` | Typed helpers that validate the payload and raise `WebSocketMessageTypeError` or `WebSocketDecodeError` when the data does not match expectations. |
+| `ping(payload=b"")` / `close(code=1000, reason=None)` | Control frames and graceful shutdown. |
+| `async for message in ws:` | Iterate over messages until the connection closes. |
+
+### Using through `Client`
+
+The HTTP client exposes a convenience helper that reuses shared timeout defaults and base URLs:
+
+```python
+async with Client(base_url="wss://example.org") as client:
+    async with await client.websocket("/chat") as ws:
+        await ws.send_text("hi!")
+        async for message in ws:
+            print("Incoming:", message)
+```
+
+### Error handling
+
+WebSocket-specific exceptions live in `fasthttp.errors`:
+
+- `WebSocketHandshakeError`: Upgrade/handshake failures.
+- `WebSocketClosed`: Connection is already closed (contains `code` and `reason`).
+- `WebSocketProtocolError`: Invalid URLs or protocol violations.
+- `WebSocketMessageTypeError`: Payload type mismatch (e.g., expected text but received binary).
+- `WebSocketDecodeError`: JSON or UTF-8 decoding failures for binary/text frames.
+- `WebSocketError`: Base class for all WebSocket-related issues.
+
+Wrap interactions with `try/except` to surface meaningful errors to your users:
+
+```python
+try:
+    async with WebSocket.connect("wss://example.org/socket") as ws:
+        ...
+except WebSocketHandshakeError as exc:
+    print("Server rejected upgrade:", exc)
+except WebSocketDecodeError as exc:
+    print("Bad payload:", exc)
 ```
 
 ## Advanced Usage
