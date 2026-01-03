@@ -19,6 +19,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
   - [Cookies](#cookies)
 - [WebSocket Client](#websocket-client)
 - [Advanced Usage](#advanced-usage)
+- [File Uploads](#file-uploads)
 - [Synchronous Wrapper](#synchronous-wrapper)
 - [Error Handling](#error-handling)
 - [Benchmarks](#benchmarks)
@@ -31,6 +32,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 - **Sync & Async Support**: Single API that can work synchronously or asynchronously
 - **Connection Pooling**: Efficient connection reuse to improve throughput
 - **Automatic Compression**: Built-in support for gzip and optional brotli (`br`) compression
+- **Multipart Uploads**: Stream-friendly file upload helper with automatic boundary/content-type handling
 - **Streaming Support**: Stream large responses without loading everything into memory
 - **JSON Handling**: Automatic JSON decoding with charset and compression support
 - **Timeout Management**: Flexible timeout configuration for connections and reads
@@ -38,6 +40,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 - **Circuit Breaker**: Optional circuit breaker pattern to prevent cascading failures
 - **Cookie Management**: Full cookie jar support
 - **HTTP/1.1 Compliant**: Properly implements the HTTP/1.1 specification
+- **Optional HTTP/2**: Seamlessly upgrade HTTPS requests to HTTP/2 when the server supports ALPN, with automatic fallback to HTTP/1.1
 - **Lightweight**: Minimal dependencies, built on the `h11pro` library
 
 ## Installation
@@ -355,6 +358,24 @@ with Client(base_url="https://api.example.com") as client:
 
 Authentication handlers receive every outgoing request (`on_request`) and can optionally inspect responses (`on_response`) to perform challenge/response flows (Digest auth does this automatically). You can pass the handler globally via `Client(..., auth=...)` or per-call via `client.get(..., auth=...)`.
 
+#### HTTP/2 Preference & Per-Request Overrides
+
+fasthttp can opportunistically negotiate HTTP/2 on HTTPS connections via [hyper-h2](https://python-hyper.org/projects/h2/en/stable/). Install `h2` (e.g. `pip install h2`) and set `http2=True` on the client to opt-in globally:
+
+```python
+async with Client(http2=True) as client:
+    resp = await client.get("https://http2.golang.org/reqinfo")
+```
+
+You can also override the preference per request:
+
+```python
+resp = await client.get("https://example.com/data", http2=False)   # force HTTP/1.1
+resp = await client.get("https://example.com/data", http2=True)    # force HTTP/2 attempt
+```
+
+If the server declines HTTP/2 during ALPN, fasthttp transparently falls back to HTTP/1.1 and retries the request.
+
 ### Response Hooks
 
 fasthttp exposes a `hooks` argument mirroring the Requests API so you can register callbacks that observe (or replace) responses. Hooks can be provided globally when instantiating `Client` or passed for individual requests:
@@ -468,6 +489,44 @@ retry_policy = RetryPolicy(
 with Client(base_url="https://api.example.com", retry=retry_policy) as client:
     resp = client.get("/resource")
 ```
+
+## File Uploads
+
+fasthttp natively handles multipart file uploads via the `files` argument or the standalone `MultipartEncoder`.
+
+```python
+from fasthttp import Client
+
+async with Client(base_url="https://api.example.com") as client:
+    files = {
+        "avatar": ("photo.jpg", open("photo.jpg", "rb")),
+        "metadata": ("meta.json", b'{"public": true}', "application/json"),
+    }
+    data = {"user_id": "123"}
+    resp = await client.post("/upload", data=data, files=files)
+    resp.raise_for_status()
+```
+
+Key details:
+
+1. `files` accepts dictionaries or lists of `(filename, content[, content_type])` tuples. Content can be bytes, strings, paths, sync/async streams, or async iterators.
+2. When `files` is provided, bodies are streamed and `Content-Length` is automatically managed (chunked transfer).
+3. Use `fasthttp.formdata.MultipartEncoder` directly for custom pipelines:
+
+```python
+from fasthttp.formdata import MultipartEncoder
+
+encoder = MultipartEncoder(
+    fields={"description": "Sample upload"},
+    files={"file": ("large.bin", open("large.bin", "rb"), "application/octet-stream")},
+)
+
+resp = await client.post("/upload", content=encoder.iter_bytes(), headers={
+    "Content-Type": encoder.content_type,
+})
+```
+
+This integration ensures efficient uploads for multi-gigabyte files without loading them entirely into memory.
 
 ## Synchronous Wrapper
 

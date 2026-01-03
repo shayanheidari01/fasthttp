@@ -4,9 +4,10 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple, Union
 
 from .connection import Connection
+from .http2 import HTTP2Connection
 from .timeouts import Timeout
 
 
@@ -35,6 +36,9 @@ class _PoolStats:
         }
 
 
+ConnectionType = Union[Connection, HTTP2Connection]
+
+
 class ConnectionPool:
     """
     Async asyncio-based connection pool keyed by (scheme, host, port).
@@ -52,10 +56,10 @@ class ConnectionPool:
         self.max_per_host = max_per_host
         self.keepalive_timeout = keepalive_timeout
         self.enable_health_check = enable_health_check
-        self._pools: Dict[Tuple[str, str, int], Deque[Connection]] = {}
-        self._locks: Dict[Tuple[str, str, int], asyncio.Lock] = {}
+        self._pools: Dict[Tuple[str, str, int, bool], Deque[ConnectionType]] = {}
+        self._locks: Dict[Tuple[str, str, int, bool], asyncio.Lock] = {}
         # Track when connections were last used
-        self._connection_times: Dict[Connection, float] = {}
+        self._connection_times: Dict[ConnectionType, float] = {}
         # Cache for connection health checks to reduce repeated lookups
         self._health_cache: Dict[int, bool] = {}
         # Cache for monotonic time calls to reduce system calls
@@ -66,9 +70,9 @@ class ConnectionPool:
 
     @staticmethod
     @lru_cache(maxsize=256)
-    def _make_key(scheme: str, host: str, port: int) -> Tuple[str, str, int]:
+    def _make_key(scheme: str, host: str, port: int, http2: bool = False) -> Tuple[str, str, int, bool]:
         """Create and cache connection keys to reduce tuple allocations."""
-        return (scheme, host, port)
+        return (scheme, host, port, http2)
     
     def _get_current_time(self) -> float:
         """Get current monotonic time with caching to reduce system calls."""
@@ -78,7 +82,7 @@ class ConnectionPool:
             self._last_time_check = current
         return self._cached_time
     
-    def _get_queue(self, key: Tuple[str, str, int]) -> Deque[Connection]:
+    def _get_queue(self, key: Tuple[str, str, int, bool]) -> Deque[ConnectionType]:
         """Get or create deque for a connection key."""
         queue = self._pools.get(key)
         if queue is None:
@@ -87,7 +91,7 @@ class ConnectionPool:
             self._locks[key] = asyncio.Lock()
         return queue
 
-    def _is_connection_healthy(self, conn: Connection) -> bool:
+    def _is_connection_healthy(self, conn: ConnectionType) -> bool:
         """Check if connection is healthy and not expired with caching."""
         self._stats.total_health_checks += 1
         
@@ -109,6 +113,11 @@ class ConnectionPool:
             self._health_cache[conn_id] = False
             return False
         
+        # HTTP/2 connections must not have in-flight streams
+        if getattr(conn, "is_http2", False) and getattr(conn, "_current_stream_id", None):
+            self._health_cache[conn_id] = False
+            return False
+
         # Check keep-alive timeout only if connection is still alive
         if self.enable_health_check and conn in self._connection_times:
             last_used = self._connection_times[conn]
@@ -120,7 +129,7 @@ class ConnectionPool:
         self._health_cache[conn_id] = True
         return True
     
-    def _clear_health_cache(self, conn: Connection) -> None:
+    def _clear_health_cache(self, conn: ConnectionType) -> None:
         """Clear health cache for a specific connection."""
         self._health_cache.pop(id(conn), None)
 
@@ -133,15 +142,16 @@ class ConnectionPool:
         timeout: Timeout,
         verify: bool = True,
         ssl_context: Optional[ssl.SSLContext] = None,
-    ) -> Connection:
-        key = self._make_key(scheme, host, port)
+        http2: bool = False,
+    ) -> ConnectionType:
+        key = self._make_key(scheme, host, port, http2)
         queue = self._get_queue(key)
         lock = self._locks[key]
         current_time = self._get_current_time()
         
         # Try to get a connection from pool
-        stale: list[Connection] = []
-        selected: Optional[Connection] = None
+        stale: list[ConnectionType] = []
+        selected: Optional[ConnectionType] = None
         async with lock:
             while queue:
                 candidate = queue.pop()
@@ -164,16 +174,28 @@ class ConnectionPool:
         
         # No healthy connection available, create new one
         use_ssl = scheme == "https"
-        conn = Connection(
-            (host, port),
-            use_ssl=use_ssl,
-            connect_timeout=timeout.connect,
-            read_timeout=timeout.read,
-            write_timeout=timeout.write,
-            verify=verify,
-            ssl_context=ssl_context,
-            scheme=scheme,
-        )
+        if http2:
+            conn = HTTP2Connection(
+                (host, port),
+                scheme=scheme,
+                ssl_context=ssl_context,
+                timeout=timeout.total,
+                connect_timeout=timeout.connect,
+                read_timeout=timeout.read,
+                write_timeout=timeout.write,
+                verify=verify,
+            )
+        else:
+            conn = Connection(
+                (host, port),
+                use_ssl=use_ssl,
+                connect_timeout=timeout.connect,
+                read_timeout=timeout.read,
+                write_timeout=timeout.write,
+                verify=verify,
+                ssl_context=ssl_context,
+                scheme=scheme,
+            )
         self._connection_times[conn] = current_time
         self._stats.total_connections_created += 1
         
@@ -184,7 +206,7 @@ class ConnectionPool:
         
         return conn
 
-    async def release(self, connection: Connection) -> None:
+    async def release(self, connection: ConnectionType) -> None:
         """Release a connection back to the pool with optimized operations."""
         if connection.closed:
             self._connection_times.pop(connection, None)
@@ -192,6 +214,9 @@ class ConnectionPool:
             return
         
         # Check if connection is still healthy before returning to pool
+        if getattr(connection, "is_http2", False):
+            await connection.cancel_active_stream()
+
         if self.enable_health_check and not self._is_connection_healthy(connection):
             await connection.close()
             self._connection_times.pop(connection, None)
@@ -199,7 +224,12 @@ class ConnectionPool:
             return
         
         scheme = connection.scheme or ("https" if connection.use_ssl else "http")
-        key = self._make_key(scheme, connection.addr[0], connection.addr[1])
+        key = self._make_key(
+            scheme,
+            connection.addr[0],
+            connection.addr[1],
+            getattr(connection, "is_http2", False),
+        )
         queue = self._get_queue(key)
         lock = self._locks[key]
         

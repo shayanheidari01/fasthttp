@@ -68,6 +68,7 @@ class Connection:
         self.h11_conn = h11.Connection(h11.CLIENT)
         self.closed = False
         self._connected = False
+        self.is_http2 = False
         # Cache for encoded headers to avoid repeated encoding
         self._header_cache: Dict[str, Tuple[bytes, bytes]] = {}
         # Connection state optimization

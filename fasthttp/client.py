@@ -14,10 +14,11 @@ from .response import Response
 from .retry import RetryPolicy
 from .logging import get_logger
 from .cookies import CookieJar
-from .errors import RequestError
+from .errors import RequestError, HTTP2NotAvailable
 from .timeouts import Timeout
 from .websocket import WebSocket
 from .auth import AuthBase, coerce_auth
+from .formdata import FilesType, MultipartEncoder
 
 T = TypeVar("T")
 HookFunc = Callable[[Response], Union[Optional[Response], Awaitable[Optional[Response]]]]
@@ -60,6 +61,7 @@ class Client:
         user_agent: Optional[str] = None,
         auth: Optional[Union[Tuple[str, str], AuthBase]] = None,
         hooks: Optional[HooksInput] = None,
+        http2: bool = False,
     ) -> None:
         self.base_url = base_url
         self.pool = pool or ConnectionPool()
@@ -67,9 +69,10 @@ class Client:
         self.retry = retry or RetryPolicy(max_attempts=1)
         self.logger = logger or get_logger()
         self.cookies = cookies or CookieJar()
-        self.user_agent = user_agent or "fasthttp/{}".format(fasthttp.__version__)
+        self.user_agent = user_agent or "pyfasthttp/{}".format(fasthttp.__version__)
         self.auth = coerce_auth(auth)
         self._hooks = self._normalize_hooks(hooks)
+        self.http2 = http2
         # Cache for header lookups to avoid repeated lowercase conversions
         self._header_cache: Dict[int, Dict[str, str]] = {}
 
@@ -82,6 +85,7 @@ class Client:
         content: Optional[bytes] = None,
         json: Optional[Any] = None,
         data: Optional[Dict[str, Union[str, int, float, None]]] = None,
+        files: Optional[FilesType] = None,
         params: Optional[Dict[str, Union[str, int, float, None]]] = None,
         timeout: Optional[float] = None,
         verify: bool = True,
@@ -91,6 +95,7 @@ class Client:
         max_redirects: int = 5,
         auth: Optional[Union[Tuple[str, str], AuthBase]] = None,
         hooks: Optional[HooksInput] = None,
+        http2: Optional[bool] = None,
     ) -> Response:
         # Build URL with query parameters
         current_url = urljoin(self.base_url, url) if self.base_url else url
@@ -105,12 +110,23 @@ class Client:
         json_data = json
         form_data = data
         if json_data is not None:
-            if content is not None or form_data is not None:
-                raise ValueError("Cannot specify 'content' or 'data' together with 'json'")
+            if any(item is not None for item in (content, form_data, files)):
+                raise ValueError("Cannot specify 'content', 'data', or 'files' together with 'json'")
             current_content = _json_module.dumps(json_data).encode("utf-8")
             current_headers = headers or {}
             if "content-type" not in {k.lower() for k in current_headers}:
                 current_headers["Content-Type"] = "application/json"
+        elif files is not None:
+            if content is not None:
+                raise ValueError("Cannot specify both 'content' and 'files'")
+            encoder = MultipartEncoder(fields=form_data, files=files)
+            current_content = encoder.iter_bytes()
+            current_headers = headers or {}
+            if "content-type" not in {k.lower() for k in current_headers}:
+                current_headers["Content-Type"] = encoder.content_type
+            if "content-length" in {k.lower() for k in current_headers}:
+                # Remove Content-Length because body is streamed
+                current_headers = {k: v for k, v in current_headers.items() if k.lower() != "content-length"}
         elif form_data is not None:
             if content is not None:
                 raise ValueError("Cannot specify both 'content' and 'data' parameters")
@@ -149,6 +165,9 @@ class Client:
             except asyncio.TimeoutError as exc:
                 raise RequestError("Total timeout exceeded") from exc
 
+        preferred_http2 = http2 if http2 is not None else self.http2
+        preferred_http2 = preferred_http2 and current_url.startswith("https://")
+
         while True:
             hdrs = self._inject_cookies(current_headers, current_url)
             # Add User-Agent if not present
@@ -177,6 +196,7 @@ class Client:
                     timeout=timeout_cfg,
                     verify=verify,
                     ssl_context=ssl_context,
+                    http2=preferred_http2,
                 ),
                 timeout_cfg,
             )
@@ -190,6 +210,24 @@ class Client:
                     # Set elapsed time
                     resp._set_elapsed(time.time() - request_start_time)
                     resp._history = response_history.copy()
+                except HTTP2NotAvailable:
+                    await conn.close()
+                    if preferred_http2:
+                        preferred_http2 = False
+                        conn = await _run_with_total(
+                            self.pool.acquire(
+                                req.scheme,
+                                req.host,
+                                req.port,
+                                timeout=timeout_cfg,
+                                verify=verify,
+                                ssl_context=ssl_context,
+                                http2=False,
+                            ),
+                            timeout_cfg,
+                        )
+                        continue
+                    raise
                 except self.retry.retry_exceptions as exc:
                     # On exception, possibly retry; if we end up giving up, record failure for circuit breaker
                     if attempts > self.retry.max_attempts:
@@ -257,8 +295,11 @@ class Client:
                     resolved_timeout = new_req.timeout
                     continue
 
-            connection_header = resp.headers.get("Connection", resp.headers.get("connection", "keep-alive")).lower()
-            should_close = connection_header == "close" or conn.closed
+            if getattr(conn, "is_http2", False):
+                should_close = conn.closed
+            else:
+                connection_header = resp.headers.get("Connection", resp.headers.get("connection", "keep-alive")).lower()
+                should_close = connection_header == "close" or conn.closed
             if stream:
                 async def _release_conn():
                     if should_close:
@@ -368,9 +409,18 @@ class Client:
         content: Optional[bytes] = None,
         json: Optional[Any] = None,
         data: Optional[Dict[str, Union[str, int, float, None]]] = None,
-        **kwargs
+        files: Optional[FilesType] = None,
+        **kwargs,
     ) -> Response:
-        return await self.request("POST", url, content=content, json=json, data=data, **kwargs)
+        return await self.request(
+            "POST",
+            url,
+            content=content,
+            json=json,
+            data=data,
+            files=files,
+            **kwargs,
+        )
 
     async def put(
         self,
@@ -378,9 +428,18 @@ class Client:
         content: Optional[bytes] = None,
         json: Optional[Any] = None,
         data: Optional[Dict[str, Union[str, int, float, None]]] = None,
-        **kwargs
+        files: Optional[FilesType] = None,
+        **kwargs,
     ) -> Response:
-        return await self.request("PUT", url, content=content, json=json, data=data, **kwargs)
+        return await self.request(
+            "PUT",
+            url,
+            content=content,
+            json=json,
+            data=data,
+            files=files,
+            **kwargs,
+        )
 
     async def delete(self, url: str, **kwargs) -> Response:
         return await self.request("DELETE", url, **kwargs)
@@ -391,9 +450,18 @@ class Client:
         content: Optional[bytes] = None,
         json: Optional[Any] = None,
         data: Optional[Dict[str, Union[str, int, float, None]]] = None,
-        **kwargs
+        files: Optional[FilesType] = None,
+        **kwargs,
     ) -> Response:
-        return await self.request("PATCH", url, content=content, json=json, data=data, **kwargs)
+        return await self.request(
+            "PATCH",
+            url,
+            content=content,
+            json=json,
+            data=data,
+            files=files,
+            **kwargs,
+        )
 
     async def head(self, url: str, **kwargs) -> Response:
         return await self.request("HEAD", url, **kwargs)

@@ -11,9 +11,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 from typing import Dict, List, Optional
 
-from fasthttp import Client, BasicAuth, DigestAuth, AuthBase
+from fasthttp import Client, BasicAuth, DigestAuth, AuthBase, Response
 from fasthttp.retry import RetryPolicy
-from fasthttp.errors import ResponseError, RequestError, WebSocketHandshakeError
+from fasthttp.errors import ResponseError, RequestError, WebSocketHandshakeError, HTTP2NotAvailable
 from fasthttp.connection import READ_BUFFER_SIZE
 from fasthttp.wsproto import WSConnection
 from fasthttp.wsproto.connection import ConnectionType
@@ -252,8 +252,7 @@ class TestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urlparse(self.path)
         path = parsed_path.path
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        body = self._read_body()
         content_type = self.headers.get("Content-Type", "").lower()
 
         if path == "/json-body":
@@ -270,6 +269,17 @@ class TestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif path == "/upload":
+            if b"upload-bytes" in body:
+                resp = b"bytes-uploaded"
+            elif b"stream-chunk-1" in body:
+                resp = b"stream-uploaded"
+            else:
+                resp = b"unknown-upload"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
         else:
             # Default: echo back the body
             self.send_response(200)
@@ -278,8 +288,7 @@ class TestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_PUT(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        body = self._read_body()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -291,8 +300,7 @@ class TestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_PATCH(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        body = self._read_body()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -316,6 +324,40 @@ class TestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_body(self) -> bytes:
+        transfer_encoding = self.headers.get("Transfer-Encoding", "").lower()
+        if "chunked" in transfer_encoding:
+            return self._read_chunked_body()
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0:
+            return b""
+        return self.rfile.read(content_length)
+
+    def _read_chunked_body(self) -> bytes:
+        body = bytearray()
+        while True:
+            size_line = self.rfile.readline()
+            if not size_line:
+                break
+            size_line = size_line.strip()
+            if not size_line:
+                continue
+            try:
+                size = int(size_line.split(b";", 1)[0], 16)
+            except ValueError:
+                break
+            if size == 0:
+                # consume trailer headers until blank line
+                while True:
+                    trailer = self.rfile.readline()
+                    if not trailer or trailer in (b"\r\n", b"\n"):
+                        break
+                break
+            chunk = self.rfile.read(size)
+            body.extend(chunk)
+            self.rfile.read(2)  # trailing CRLF
+        return bytes(body)
 
     def _send_basic_challenge(self) -> None:
         self.send_response(401)
@@ -480,6 +522,44 @@ async def run_ws_server():
         await server.wait_closed()
 
 
+class _DummyConnection:
+    def __init__(self, *, is_http2: bool, actions):
+        self.is_http2 = is_http2
+        self._actions = actions
+        self.closed = False
+
+    async def send_request(self, request, stream: bool = False) -> Response:
+        if not self._actions:
+            raise AssertionError("No actions left for dummy connection")
+        action = self._actions.pop(0)
+        if action == "raise_h2":
+            raise HTTP2NotAvailable("test fallback")
+        return Response(
+            status_code=200,
+            headers={"Content-Length": "2"},
+            content=b"ok",
+            request=request,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _DummyPool:
+    def __init__(self) -> None:
+        self.http2_conn = _DummyConnection(is_http2=True, actions=["raise_h2"])
+        self.http1_conn = _DummyConnection(is_http2=False, actions=["ok"])
+        self.acquire_calls = []
+        self.released: List[_DummyConnection] = []
+
+    async def acquire(self, *args, http2: bool = False, **kwargs):
+        self.acquire_calls.append(http2)
+        return self.http2_conn if http2 else self.http1_conn
+
+    async def release(self, conn):
+        self.released.append(conn)
+
+
 async def test_gzip_decoding(client: Client) -> None:
     resp = await client.get("/gzip")
     assert resp.status_code == 200
@@ -574,6 +654,18 @@ async def test_lowercase_header_names(client: Client) -> None:
         assert resp.json() == {"ok": True}
     finally:
         TestHandler.do_GET = original_do_GET
+
+
+async def test_http2_preference_and_fallback(client: Client) -> None:
+    pool = _DummyPool()
+    client = Client(base_url="https://example.com", pool=pool, http2=True)
+
+    resp = await client.get("/resource")
+    assert resp.status_code == 200
+    # First attempt should try HTTP/2, second attempt should fall back to HTTP/1.1
+    assert pool.acquire_calls == [True, False]
+    # Connection should have been released back to the pool
+    assert pool.released and pool.released[-1] is pool.http1_conn
 
 
 async def test_empty_body_json(client: Client) -> None:
@@ -821,6 +913,27 @@ async def test_form_data(client: Client) -> None:
     assert "field1=value1" in form_string
     assert "field2=value2" in form_string
     assert "number=123" in form_string
+
+
+async def test_file_upload_bytes(client: Client) -> None:
+    """Test multipart file upload with in-memory bytes."""
+    files = {"file": ("upload.txt", b"upload-bytes")}
+    resp = await client.post("/upload", files=files)
+    assert resp.status_code == 200
+    assert resp.text() == "bytes-uploaded"
+
+
+async def test_file_upload_stream(client: Client) -> None:
+    """Test multipart file upload with streaming iterator."""
+
+    async def stream():
+        yield b"stream-chunk-1"
+        yield b"-chunk-2"
+
+    files = {"file": ("stream.bin", stream(), "application/octet-stream")}
+    resp = await client.post("/upload", files=files)
+    assert resp.status_code == 200
+    assert resp.text() == "stream-uploaded"
 
 
 async def test_elapsed_time(client: Client) -> None:
@@ -1168,6 +1281,8 @@ async def run_all_tests() -> None:
                 test_json_body,
                 test_query_parameters,
                 test_form_data,
+                test_file_upload_bytes,
+                test_file_upload_stream,
                 test_elapsed_time,
                 test_redirect_history,
                 test_cookie_path,
@@ -1182,6 +1297,7 @@ async def run_all_tests() -> None:
                 test_json_and_content_conflict,
                 test_json_and_data_conflict,
                 test_content_and_data_conflict,
+                test_http2_preference_and_fallback,
                 test_redirect_with_json_body,
                 test_connection_pool_health_check,
                 test_cookie_jar_clear,
@@ -1195,7 +1311,7 @@ async def run_all_tests() -> None:
             ]
             for test_fn in tests:
                 await test_fn(client)
-            print(f"[OK] {test_fn.__name__}")
+                print(f"[OK] {test_fn.__name__}")
     
     # Run tests that don't need the client parameter
     await test_base_url_without_base_url()

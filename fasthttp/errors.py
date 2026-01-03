@@ -13,6 +13,10 @@ class ResponseError(FastHTTPError):
     """Raised when response parsing fails."""
 
 
+class HTTP2NotAvailable(RequestError):
+    """Raised when HTTP/2 cannot be negotiated and the client should fall back."""
+
+
 class PoolError(FastHTTPError):
     """Raised when the connection pool cannot provide a connection."""
 
@@ -59,7 +63,17 @@ class WebSocketDecodeError(WebSocketError):
 class HTTPStatusError(ResponseError):
     """Raised when a response has an HTTP error status (4xx or 5xx)."""
 
-    def __init__(self, status_code: int, message: str, response: Optional[object] = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        response: Optional[object] = None,
+        *,
+        reason: Optional[str] = None,
+        detail: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.response = response
+        self.reason = reason
+        self.detail = detail

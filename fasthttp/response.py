@@ -6,7 +6,7 @@ import re
 import time
 import zlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional
 
 try:
     import brotli  # type: ignore
@@ -19,6 +19,10 @@ from .errors import HTTPStatusError, ResponseError
 
 # Pre-compiled regex for charset detection to improve performance
 _CHARSET_REGEX = re.compile(r'charset=([^;,\\s]+)', re.IGNORECASE)
+# Pre-compiled regex for Link header parsing
+_LINK_PATTERN = re.compile(r'<([^>]+)>\s*;\s*(.+)')
+
+_ERROR_DETAIL_KEYS = ("detail", "message", "error", "error_description", "description", "title")
 
 def _decode_gzip(payload: memoryview) -> bytes:
     """Decode gzip-compressed payload."""
@@ -327,12 +331,96 @@ class Response:
         Raise HTTPStatusError if status code indicates an error (4xx or 5xx).
         """
         if 400 <= self.status_code < 600:
-            reason = self.reason or "Unknown error"
+            reason = (self.reason or "").strip() or "Unknown error"
+            url = self.request.url if self.request else "unknown URL"
+            detail: Optional[str] = None
+
+            if self.content:
+                try:
+                    body_text = self.text().strip()
+                except Exception:
+                    body_text = ""
+
+                if body_text:
+                    detail = self._extract_error_detail(body_text)
+
+            message = f"HTTP {self.status_code} for {url}: {reason}"
+            if detail:
+                message = f"{message} - {detail}"
+
             raise HTTPStatusError(
                 self.status_code,
-                f"HTTP {self.status_code}: {reason}",
-                self
+                message,
+                self,
+                reason=reason,
+                detail=detail,
             )
+
+    def _extract_error_detail(self, body_text: str) -> str:
+        """
+        Extract a short detail string from the response body.
+        Prefers JSON error payloads and falls back to text snippets.
+        """
+        body_text = body_text.strip()
+        if not body_text:
+            return body_text
+
+        # Try JSON first
+        try:
+            parsed = json.loads(body_text)
+            detail = self._pluck_detail_from_json(parsed)
+            if detail:
+                return detail
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: compressed text snippet (single line)
+        single_line = " ".join(body_text.split())
+        return single_line[:200]
+
+    def _pluck_detail_from_json(self, payload: Any) -> Optional[str]:
+        """
+        Traverse dict/list payloads to find a meaningful detail string.
+        """
+        if isinstance(payload, dict):
+            for key in _ERROR_DETAIL_KEYS:
+                if key in payload:
+                    value = payload[key]
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            # Fallback to first string value
+            for value in payload.values():
+                detail = self._pluck_detail_from_json(value)
+                if detail:
+                    return detail
+        elif isinstance(payload, list):
+            for item in payload:
+                detail = self._pluck_detail_from_json(item)
+                if detail:
+                    return detail
+        elif isinstance(payload, str):
+            text = payload.strip()
+            if text:
+                return text
+        return None
+
+    @staticmethod
+    def _split_chunk(chunk: bytes, chunk_size: int) -> Iterable[bytes]:
+        if len(chunk) <= chunk_size:
+            yield chunk
+            return
+        view = memoryview(chunk)
+        for start in range(0, len(chunk), chunk_size):
+            yield bytes(view[start : start + chunk_size])
+
+    @staticmethod
+    def _decode_line_bytes(data: bytes, encoding: str) -> str:
+        if not data:
+            return ""
+        try:
+            return data.decode(encoding)
+        except Exception:
+            return data.decode("utf-8", errors="replace")
 
     async def iter_bytes(self) -> AsyncIterator[bytes]:
         """
@@ -362,39 +450,40 @@ class Response:
         Lines are decoded using detected encoding.
         Optimized to reduce string operations and memory allocations.
         """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+
         buffer = bytearray()
         newline = b"\n"
         carriage_return = b"\r"
-        
+        encoding = self.encoding
+
         async for chunk in self.iter_bytes():
             if not chunk:
                 continue
-                
-            buffer.extend(chunk)
-            while True:
-                line_end = buffer.find(newline)
-                if line_end == -1:
-                    break
-                line = buffer[:line_end]
-                del buffer[:line_end + 1]
-                
-                # Remove trailing carriage return if present
-                if line.endswith(carriage_return):
-                    line = line[:-1]
-                
-                # Decode line efficiently
-                try:
-                    decoded = line.decode(self.encoding)
-                except Exception:
-                    decoded = line.decode("utf-8", errors="replace")
-                yield decoded
-        # Yield remaining buffer as final line
+
+            for piece in self._split_chunk(chunk, chunk_size):
+                buffer.extend(piece)
+                while True:
+                    line_end = buffer.find(newline)
+                    if line_end == -1:
+                        break
+                    line = buffer[:line_end]
+                    del buffer[:line_end + 1]
+
+                    if line.endswith(carriage_return):
+                        line = line[:-1]
+
+                    decoded = self._decode_line_bytes(line, encoding)
+                    if decoded or line:
+                        yield decoded
+
         if buffer:
-            try:
-                decoded = buffer.decode(self.encoding)
-            except Exception:
-                decoded = buffer.decode("utf-8", errors="replace")
-            yield decoded
+            if buffer.endswith(carriage_return):
+                buffer = buffer[:-1]
+            decoded = self._decode_line_bytes(buffer, encoding)
+            if decoded or buffer:
+                yield decoded
 
     async def close(self) -> None:
         """

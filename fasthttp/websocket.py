@@ -16,9 +16,9 @@ from .errors import (
     WebSocketProtocolError,
 )
 from .timeouts import Timeout
-from .wsproto import WSConnection
-from .wsproto.connection import ConnectionState, ConnectionType
-from .wsproto.events import (
+from wsproto import WSConnection
+from wsproto.connection import ConnectionState, ConnectionType
+from wsproto.events import (
     AcceptConnection,
     BytesMessage,
     CloseConnection,
