@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator as AsyncIterABC
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Union, AsyncIterable
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from .timeouts import Timeout
 
@@ -40,9 +40,7 @@ class Request:
         self.scheme = parsed.scheme
         self.host = parsed.hostname
         self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        self.target = parsed.path or "/"
-        if parsed.query:
-            self.target += f"?{parsed.query}"
+        self.target = self._encode_target(parsed.path, parsed.query)
         self._normalize_headers()
 
     def _normalize_headers(self) -> None:
@@ -82,6 +80,16 @@ class Request:
         if isinstance(self.content, (bytes, bytearray, memoryview, str)):
             return False
         return isinstance(self.content, (AsyncIterABC, AsyncIterable))
+
+    @staticmethod
+    def _encode_target(path: Optional[str], query: str) -> str:
+        safe_path = "/:@!$&'()*+,;=%-._~"
+        safe_query = "/?:@!$&'()*+,;=%-._~+"
+        encoded_path = quote(path or "/", safe=safe_path)
+        if query:
+            encoded_query = quote(query, safe=safe_query)
+            return f"{encoded_path}?{encoded_query}"
+        return encoded_path
 
     def iter_body(self) -> Optional[AsyncIterABC[bytes]]:
         if self.content is None or not self._is_streaming_body():

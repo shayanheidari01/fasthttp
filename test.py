@@ -8,7 +8,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager, suppress
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from typing import Dict, List, Optional
 
 from fasthttp import Client, BasicAuth, DigestAuth, AuthBase, Response
@@ -902,6 +902,22 @@ async def test_query_parameters(client: Client) -> None:
     assert "key1=value1" in query_string
     assert "key2=value2" in query_string
     assert "num=42" in query_string
+
+
+async def test_non_ascii_query(client: Client) -> None:
+    """Ensure non-ASCII query params are percent-encoded."""
+    term = "امیر تتلو"
+    resp = await client.get("/query-test", params={"q": term})
+    assert resp.status_code == 200
+    query_string = resp.text()
+    encoded = quote(term, safe="")
+    assert f"q={encoded}" in query_string
+
+    full_url = f"{client.base_url}/query-test?q={term}"
+    resp2 = await client.get(full_url)
+    assert resp2.status_code == 200
+    query_string2 = resp2.text()
+    assert f"q={encoded}" in query_string2
 
 
 async def test_form_data(client: Client) -> None:
