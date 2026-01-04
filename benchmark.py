@@ -15,7 +15,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Sequence
 AsyncRequestFn = Callable[[], Awaitable[int]]
 SyncRequestFn = Callable[[], int]
 
-DEFAULT_LIBRARIES = ["fasthttp", "aiohttp", "httpx", "requests"]
+DEFAULT_LIBRARIES = ["maxhttp", "aiohttp", "httpx", "requests"]
 
 
 class Stats:
@@ -273,16 +273,16 @@ def ensure_payload(args: argparse.Namespace) -> Optional[bytes]:
     return os.urandom(args.body_size)
 
 
-async def benchmark_fasthttp(
+async def benchmark_maxhttp(
     args: argparse.Namespace,
     payload: Optional[bytes],
     headers: Dict[str, str],
     sample_limit: Optional[int],
 ) -> BenchmarkResult:
     try:
-        from fasthttp import Client
+        from maxhttp import Client
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("fasthttp is not installed") from exc
+        raise RuntimeError("maxhttp is not installed") from exc
 
     method = args.method.upper()
     send_body = payload if payload is not None and method not in {"GET", "HEAD"} else None
@@ -316,7 +316,7 @@ async def benchmark_fasthttp(
         args.latency_seed,
     )
     await client.close()
-    return _build_result("fasthttp", outcome)
+    return _build_result("maxhttp", outcome)
 
 
 async def benchmark_httpx(
@@ -487,7 +487,7 @@ def print_summary(results: List[BenchmarkResult], args: argparse.Namespace) -> N
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark fasthttp against aiohttp/httpx/requests.")
+    parser = argparse.ArgumentParser(description="Benchmark maxhttp against aiohttp/httpx/requests.")
     parser.add_argument("--url", default="https://httpbin.org/get", help="Target URL to hit")
     parser.add_argument("--method", default="GET", choices=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], help="HTTP method")
     parser.add_argument("--duration", type=float, default=10.0, help="Duration (seconds) to run each benchmark")
@@ -550,7 +550,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             Awaitable[BenchmarkResult] | BenchmarkResult,
         ],
     ] = {
-        "fasthttp": benchmark_fasthttp,
+        "maxhttp": benchmark_maxhttp,
         "aiohttp": benchmark_aiohttp,
         "httpx": benchmark_httpx,
         "requests": benchmark_requests,
@@ -566,7 +566,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             elif asyncio.iscoroutine(runner):  # pragma: no cover
                 result = asyncio.run(runner)  # defensive
             else:
-                if name in {"fasthttp", "aiohttp", "httpx"}:
+                if name in {"maxhttp", "aiohttp", "httpx"}:
                     result = asyncio.run(runner(args, payload, args.headers, sample_limit))  # type: ignore[arg-type]
                 else:
                     result = runner(args, payload, args.headers, sample_limit)  # type: ignore[call-arg]

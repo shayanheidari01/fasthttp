@@ -6,10 +6,10 @@ import functools
 import inspect
 import threading
 
-from fasthttp.client import Client
-from fasthttp.response import Response
-from fasthttp.pool import ConnectionPool
-from fasthttp.connection import Connection
+from .client import Client
+from .response import Response
+from .pool import ConnectionPool
+from .connection import Connection
 
 
 def async_to_sync(obj, name):

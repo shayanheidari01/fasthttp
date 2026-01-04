@@ -1,5 +1,4 @@
 import asyncio
-import fasthttp
 import json as _json_module
 import logging
 import inspect
@@ -8,6 +7,7 @@ import time
 from typing import Any, Dict, List, Optional, Union, Awaitable, TypeVar, Tuple, Callable, Sequence
 from urllib.parse import urlencode, urljoin, urlparse, urlunparse, parse_qs
 
+from ._version import __version__
 from .pool import ConnectionPool
 from .request import Request
 from .response import Response
@@ -69,7 +69,7 @@ class Client:
         self.retry = retry or RetryPolicy(max_attempts=1)
         self.logger = logger or get_logger()
         self.cookies = cookies or CookieJar()
-        self.user_agent = user_agent or "pyfasthttp/{}".format(fasthttp.__version__)
+        self.user_agent = user_agent or f"maxhttp/{__version__}"
         self.auth = coerce_auth(auth)
         self._hooks = self._normalize_hooks(hooks)
         self.http2 = http2

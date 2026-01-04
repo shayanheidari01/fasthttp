@@ -1,10 +1,10 @@
-# fasthttp
+# maxhttp
 
 A small, fast, and extensible HTTP/1.1 client library with both synchronous and asynchronous APIs, connection pooling, streaming support, retry/backoff, and automatic decoding of compressed responses.
 
-[![PyPI version](https://badge.fury.io/py/pyfasthttp.svg)](https://badge.fury.io/py/pyfasthttp)
+[![PyPI version](https://badge.fury.io/py/maxhttp.svg)](https://badge.fury.io/py/maxhttp)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python Version](https://img.shields.io/pypi/pyversions/pyfasthttp.svg)](https://pypi.org/project/pyfasthttp/)
+[![Python Version](https://img.shields.io/pypi/pyversions/maxhttp.svg)](https://pypi.org/project/maxhttp/)
 
 ## Table of Contents
 - [Features](#features)
@@ -48,7 +48,7 @@ A small, fast, and extensible HTTP/1.1 client library with both synchronous and 
 Install using pip:
 
 ```bash
-pip install pyfasthttp
+pip install maxhttp
 ```
 
 For development with all optional dependencies:
@@ -64,8 +64,8 @@ Note: Brotli (`br`) support is optional and available via the `brotli` package (
 ### Synchronous Usage
 
 ```python
-from fasthttp import Client
-from fasthttp.timeouts import Timeout
+from maxhttp import Client
+from maxhttp.timeouts import Timeout
 
 # Basic GET request
 with Client() as client:
@@ -83,8 +83,8 @@ with Client(timeout=Timeout(connect=5, read=10)) as client:
 
 ```python
 import asyncio
-from fasthttp import Client
-from fasthttp.timeouts import Timeout
+from maxhttp import Client
+from maxhttp.timeouts import Timeout
 
 async def main():
     # Basic async request
@@ -108,7 +108,7 @@ asyncio.run(main())
 The `Client` class provides an asynchronous HTTP client with connection pooling that can be used either synchronously or asynchronously. When used directly, it requires async/await syntax.
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 # Basic client
 with Client() as client:
@@ -119,7 +119,7 @@ with Client(base_url="https://api.example.com") as client:
     response = client.get("/users")  # Will make request to https://api.example.com/users
 
 # Client with custom timeout
-from fasthttp.timeouts import Timeout
+from maxhttp.timeouts import Timeout
 with Client(timeout=Timeout(connect=5, read=10, total=30)) as client:
     response = client.get("https://api.example.com/users")
 ```
@@ -140,7 +140,7 @@ with Client(timeout=Timeout(connect=5, read=10, total=30)) as client:
 The `Request` class represents an HTTP request.
 
 ```python
-from fasthttp import Request
+from maxhttp import Request
 
 # Create a request object
 request = Request(
@@ -157,7 +157,7 @@ request = Request(
 The `Response` class represents an HTTP response.
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 with Client() as client:
     resp = client.get("https://httpbin.org/json")
@@ -192,7 +192,7 @@ with Client() as client:
 Configure connection, read, and total timeouts.
 
 ```python
-from fasthttp.timeouts import Timeout
+from maxhttp.timeouts import Timeout
 
 # Different timeout configurations
 no_timeout = Timeout()  # No timeouts
@@ -206,8 +206,8 @@ full_timeout = Timeout(connect=5, read=10, total=30)  # Full configuration
 Configure retry behavior with optional circuit breaker.
 
 ```python
-from fasthttp import Client
-from fasthttp.retry import RetryPolicy
+from maxhttp import Client
+from maxhttp.retry import RetryPolicy
 
 # Basic retry policy
 retry_policy = RetryPolicy(max_attempts=3)
@@ -239,8 +239,8 @@ with Client(retry=retry_policy) as client:
 Manage cookies with the `CookieJar`.
 
 ```python
-from fasthttp import Client
-from fasthttp.cookies import CookieJar
+from maxhttp import Client
+from maxhttp.cookies import CookieJar
 
 # Create a cookie jar
 jar = CookieJar()
@@ -252,13 +252,13 @@ with Client(cookies=jar) as client:
 
 ## WebSocket Client
 
-fasthttp ships with a lightweight WebSocket client powered by [wsproto](https://github.com/python-hyper/wsproto). It integrates with the HTTP client's timeout settings, supports the async context-manager pattern, and offers helpers for text, binary, and JSON payloads.
+maxhttp ships with a lightweight WebSocket client powered by [wsproto](https://github.com/python-hyper/wsproto). It integrates with the HTTP client's timeout settings, supports the async context-manager pattern, and offers helpers for text, binary, and JSON payloads.
 
 ### Quick example
 
 ```python
 import asyncio
-from fasthttp import WebSocket
+from maxhttp import WebSocket
 
 async def main():
     async with WebSocket.connect("wss://echo.websocket.org") as ws:
@@ -302,7 +302,7 @@ async with Client(base_url="wss://example.org") as client:
 
 ### Error handling
 
-WebSocket-specific exceptions live in `fasthttp.errors`:
+WebSocket-specific exceptions live in `maxhttp.errors`:
 
 - `WebSocketHandshakeError`: Upgrade/handshake failures.
 - `WebSocketClosed`: Connection is already closed (contains `code` and `reason`).
@@ -327,10 +327,10 @@ except WebSocketDecodeError as exc:
 
 ### Authentication
 
-fasthttp ships with pluggable authentication handlers that mirror the HTTP exchanges performed by web servers.
+maxhttp ships with pluggable authentication handlers that mirror the HTTP exchanges performed by web servers.
 
 ```python
-from fasthttp import Client, BasicAuth, DigestAuth, AuthBase
+from maxhttp import Client, BasicAuth, DigestAuth, AuthBase
 
 # 1) Basic authentication (tuple shorthand)
 with Client(base_url="https://api.example.com", auth=("user", "pass")) as client:
@@ -360,7 +360,7 @@ Authentication handlers receive every outgoing request (`on_request`) and can op
 
 #### HTTP/2 Preference & Per-Request Overrides
 
-fasthttp can opportunistically negotiate HTTP/2 on HTTPS connections via [hyper-h2](https://python-hyper.org/projects/h2/en/stable/). Install `h2` (e.g. `pip install h2`) and set `http2=True` on the client to opt-in globally:
+maxhttp can opportunistically negotiate HTTP/2 on HTTPS connections via [hyper-h2](https://python-hyper.org/projects/h2/en/stable/). Install `h2` (e.g. `pip install h2`) and set `http2=True` on the client to opt-in globally:
 
 ```python
 async with Client(http2=True) as client:
@@ -374,21 +374,21 @@ resp = await client.get("https://example.com/data", http2=False)   # force HTTP/
 resp = await client.get("https://example.com/data", http2=True)    # force HTTP/2 attempt
 ```
 
-If the server declines HTTP/2 during ALPN, fasthttp transparently falls back to HTTP/1.1 and retries the request.
+If the server declines HTTP/2 during ALPN, maxhttp transparently falls back to HTTP/1.1 and retries the request.
 
 ### Response Hooks
 
-fasthttp exposes a `hooks` argument mirroring the Requests API so you can register callbacks that observe (or replace) responses. Hooks can be provided globally when instantiating `Client` or passed for individual requests:
+maxhttp exposes a `hooks` argument mirroring the Requests API so you can register callbacks that observe (or replace) responses. Hooks can be provided globally when instantiating `Client` or passed for individual requests:
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 def log_status(resp):
     print("Got status:", resp.status_code)
 
 async def uppercase_hook(resp):
     # Hooks may be async and may return a replacement Response
-    from fasthttp import Response
+    from maxhttp import Response
     return Response(
         status_code=resp.status_code,
         headers=resp.headers,
@@ -407,7 +407,7 @@ Hook callbacks receive the `Response` object, may be sync or async, and can retu
 ### Streaming Large Responses
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 with Client() as client:
     resp = client.get("https://httpbin.org/stream/20", stream=True)
@@ -421,7 +421,7 @@ with Client() as client:
 
 ```python
 import asyncio
-from fasthttp import Client
+from maxhttp import Client
 
 async def stream_example():
     async with Client() as client:
@@ -437,7 +437,7 @@ asyncio.run(stream_example())
 ### Custom Headers and Parameters
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 with Client() as client:
     # With custom headers and query parameters
@@ -452,7 +452,7 @@ with Client() as client:
 ### POST Request with Data
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 with Client() as client:
     # Send JSON data
@@ -475,8 +475,8 @@ with Client() as client:
 Enable the circuit breaker to prevent cascading failures:
 
 ```python
-from fasthttp import Client
-from fasthttp.retry import RetryPolicy
+from maxhttp import Client
+from maxhttp.retry import RetryPolicy
 
 # Configure circuit breaker
 retry_policy = RetryPolicy(
@@ -492,10 +492,10 @@ with Client(base_url="https://api.example.com", retry=retry_policy) as client:
 
 ## File Uploads
 
-fasthttp natively handles multipart file uploads via the `files` argument or the standalone `MultipartEncoder`.
+maxhttp natively handles multipart file uploads via the `files` argument or the standalone `MultipartEncoder`.
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 async with Client(base_url="https://api.example.com") as client:
     files = {
@@ -511,10 +511,10 @@ Key details:
 
 1. `files` accepts dictionaries or lists of `(filename, content[, content_type])` tuples. Content can be bytes, strings, paths, sync/async streams, or async iterators.
 2. When `files` is provided, bodies are streamed and `Content-Length` is automatically managed (chunked transfer).
-3. Use `fasthttp.formdata.MultipartEncoder` directly for custom pipelines:
+3. Use `maxhttp.formdata.MultipartEncoder` directly for custom pipelines:
 
 ```python
-from fasthttp.formdata import MultipartEncoder
+from maxhttp.formdata import MultipartEncoder
 
 encoder = MultipartEncoder(
     fields={"description": "Sample upload"},
@@ -533,7 +533,7 @@ This integration ensures efficient uploads for multi-gigabyte files without load
 The library provides a synchronous wrapper for async classes:
 
 ```python
-from fasthttp import Client
+from maxhttp import Client
 
 # Now you can use async classes synchronously
 with Client(base_url="https://api.example.com") as client:
@@ -546,9 +546,9 @@ with Client(base_url="https://api.example.com") as client:
 The library provides specific exception types for different error conditions:
 
 ```python
-from fasthttp import Client
-from fasthttp.errors import (
-    FastHTTPError,
+from maxhttp import Client
+from maxhttp.errors import (
+    MaxHTTPError,
     RequestError,
     ResponseError,
     HTTPStatusError,
@@ -563,12 +563,12 @@ with Client() as client:
         print(f"HTTP error occurred: {e}")
     except RequestError as e:
         print(f"Request error occurred: {e}")
-    except FastHTTPError as e:
-        print(f"General FastHTTP error occurred: {e}")
+    except MaxHTTPError as e:
+        print(f"General MaxHTTP error occurred: {e}")
 ```
 
 ### Available Exceptions:
-- `FastHTTPError` - Base exception class
+- `MaxHTTPError` - Base exception class
 - `RequestError` - Errors during request processing
 - `ResponseError` - Errors during response processing
 - `HTTPStatusError` - HTTP error status codes (4xx, 5xx)
@@ -576,7 +576,7 @@ with Client() as client:
 
 ## Benchmarks
 
-The repository ships with a heavy-load benchmarking harness that compares fasthttp against popular Python HTTP clients under identical settings.
+The repository ships with a heavy-load benchmarking harness that compares maxhttp against popular Python HTTP clients under identical settings.
 
 ### How to run
 
@@ -589,7 +589,7 @@ python benchmark.py \
   --warmup 10
 ```
 
-Use `--help` to discover additional flags (custom headers, TLS toggle, payload sizes, latency sampling controls, etc.). Ensure `fasthttp`, `aiohttp`, `httpx`, and `requests` are installed in the active environment.
+Use `--help` to discover additional flags (custom headers, TLS toggle, payload sizes, latency sampling controls, etc.). Ensure `maxhttp`, `aiohttp`, `httpx`, and `requests` are installed in the active environment.
 
 ### Latest results
 
@@ -597,14 +597,14 @@ _Hardware/Network_: User laptop, residential network. Results may vary with diff
 
 | Library   | Requests | Success | Req/s | Avg Lat (ms) | P95 Lat (ms) | P99 Lat (ms) | Mbps |
 |-----------|----------|---------|------:|-------------:|-------------:|-------------:|-----:|
-| fasthttp  | 1.5K     | 1.5K    |    92 |        649.7 |       1635.6 |       2380.5 | 0.22 |
+| maxhttp  | 1.5K     | 1.5K    |    92 |        649.7 |       1635.6 |       2380.5 | 0.22 |
 | requests  | 1.2K     | 1.2K    |    64 |        812.7 |       2653.1 |       4668.8 | 0.17 |
 | aiohttp   | 1.1K     | 1.1K    |    63 |        937.2 |       2123.0 |       3039.7 | 0.16 |
 | httpx     | 0.5K     | 0.5K    |    23 |       1930.9 |       3438.8 |       5803.9 | 0.06 |
 
 Configuration: GET https://httpbin.org/get, 15s per client, concurrency=64, 1KB payload, TLS verification enabled, 10 warmup hits per client.
 
-> **Note:** fasthttp is under active development; rerun the benchmark after significant changes or on infrastructure that matches your production constraints for more representative numbers.
+> **Note:** maxhttp is under active development; rerun the benchmark after significant changes or on infrastructure that matches your production constraints for more representative numbers.
 
 ## Development
 
@@ -612,8 +612,8 @@ Configuration: GET https://httpbin.org/get, 15s per client, concurrency=64, 1KB 
 
 ```bash
 # Clone the repository
-git clone https://github.com/shayanheidari01/fasthttp.git
-cd fasthttp
+git clone https://github.com/shayanheidari01/maxhttp.git
+cd maxhttp
 
 # Create virtual environment
 python -m venv venv
@@ -645,7 +645,7 @@ The project uses `ruff` for linting and `mypy` for type checking:
 ruff check .
 
 # Run type checker
-mypy fasthttp/
+mypy maxhttp/
 ```
 
 ## Contributing

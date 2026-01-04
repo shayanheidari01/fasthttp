@@ -5,18 +5,18 @@ import re
 HERE = Path(__file__).parent
 
 long_description = (HERE / "README.md").read_text(encoding="utf-8")
-init_text = (HERE / "fasthttp" / "__init__.py").read_text(encoding="utf-8")
+init_text = (HERE / "maxhttp" / "__init__.py").read_text(encoding="utf-8")
 _version_match = re.search(r'^__version__\s*=\s*[\'\"]([^\'\"]+)[\'\"]', init_text, re.M)
 version = _version_match.group(1) if _version_match else "0.0.0"
 
 setup(
-    name="pyfasthttp",
+    name="maxhttp",
     version=version,
     description="Blazing-fast Python HTTP client offering unified sync/async APIs with smart pooling.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Shayan Heidari",
-    packages=find_packages(include=["fasthttp", "fasthttp.*"]),
+    packages=find_packages(include=["maxhttp", "maxhttp.*"]),
     include_package_data=True,
     python_requires=">=3.9",
     install_requires=["h11pro", "wsproto"],
@@ -25,7 +25,7 @@ setup(
     },
     license="GNU General Public License v3 (GPLv3)",
     license_files=["LICENSE"],
-    url="https://github.com/shayanheidari01/fasthttp",
+    url="https://github.com/shayanheidari01/maxhttp",
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3 :: Only",

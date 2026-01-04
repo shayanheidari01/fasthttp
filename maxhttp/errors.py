@@ -1,15 +1,15 @@
 from typing import Optional
 
 
-class FastHTTPError(Exception):
-    """Base exception for the fasthttp package."""
+class MaxHTTPError(Exception):
+    """Base exception for the maxhttp package."""
 
 
-class RequestError(FastHTTPError):
+class RequestError(MaxHTTPError):
     """Raised when request building or sending fails."""
 
 
-class ResponseError(FastHTTPError):
+class ResponseError(MaxHTTPError):
     """Raised when response parsing fails."""
 
 
@@ -17,11 +17,11 @@ class HTTP2NotAvailable(RequestError):
     """Raised when HTTP/2 cannot be negotiated and the client should fall back."""
 
 
-class PoolError(FastHTTPError):
+class PoolError(MaxHTTPError):
     """Raised when the connection pool cannot provide a connection."""
 
 
-class WebSocketError(FastHTTPError):
+class WebSocketError(MaxHTTPError):
     """Base class for WebSocket-related errors."""
 
 

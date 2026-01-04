@@ -1,10 +1,10 @@
 """
-Example of using fasthttp in synchronous mode.
+Example of using maxhttp in synchronous mode.
 
 sync mode auto enabled.
 """
 
-from fasthttp import Client, RetryPolicy
+from maxhttp import Client, RetryPolicy
 
 
 # Now you can use Client synchronously (no await needed)

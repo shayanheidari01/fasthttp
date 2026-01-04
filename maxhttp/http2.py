@@ -56,8 +56,8 @@ if _H2_IMPORT_ERROR is not None:
 
         def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - trivial
             raise HTTP2NotAvailable(
-                "hyper-h2 is not installed. Install fasthttp with the HTTP/2 extra: "
-                "`pip install fasthttp[h2]`."
+                "hyper-h2 is not installed. Install maxhttp with the HTTP/2 extra: "
+                "`pip install maxhttp[h2]`."
             ) from _H2_IMPORT_ERROR
 
 else:

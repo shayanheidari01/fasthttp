@@ -11,13 +11,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, quote
 from typing import Dict, List, Optional
 
-from fasthttp import Client, BasicAuth, DigestAuth, AuthBase, Response
-from fasthttp.retry import RetryPolicy
-from fasthttp.errors import ResponseError, RequestError, WebSocketHandshakeError, HTTP2NotAvailable
-from fasthttp.connection import READ_BUFFER_SIZE
-from fasthttp.wsproto import WSConnection
-from fasthttp.wsproto.connection import ConnectionType
-from fasthttp.wsproto.events import (
+from maxhttp import Client, BasicAuth, DigestAuth, AuthBase, Response
+from maxhttp.retry import RetryPolicy
+from maxhttp.errors import ResponseError, RequestError, WebSocketHandshakeError, HTTP2NotAvailable
+from maxhttp.connection import READ_BUFFER_SIZE
+from maxhttp.wsproto import WSConnection
+from maxhttp.wsproto.connection import ConnectionType
+from maxhttp.wsproto.events import (
     AcceptConnection,
     BytesMessage,
     CloseConnection,
@@ -42,7 +42,7 @@ DIGEST_USERNAME = "digestuser"
 DIGEST_PASSWORD = "digestpass"
 API_KEY_SECRET = "secret-key-123"
 DIGEST_NONCE = "abcdef1234567890"
-DIGEST_REALM = "fasthttp-test"
+DIGEST_REALM = "maxhttp-test"
 DIGEST_OPAQUE = "deadbeef"
 
 
@@ -361,7 +361,7 @@ class TestHandler(BaseHTTPRequestHandler):
 
     def _send_basic_challenge(self) -> None:
         self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="fasthttp-basic"')
+        self.send_header("WWW-Authenticate", 'Basic realm="maxhttp-basic"')
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -1057,7 +1057,7 @@ async def test_user_agent(client: Client) -> None:
     resp = await client.get("/check-user-agent")
     assert resp.status_code == 200
     ua = resp.text()
-    assert "fasthttp" in ua.lower()
+    assert "maxhttp" in ua.lower()
 
 
 async def test_custom_user_agent(client: Client) -> None:

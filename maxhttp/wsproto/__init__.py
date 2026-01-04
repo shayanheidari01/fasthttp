@@ -1,4 +1,4 @@
-"""Compatibility shim exposing third-party wsproto under fasthttp.wsproto."""
+"""Compatibility shim exposing third-party wsproto under maxhttp.wsproto."""
 from importlib import import_module
 import sys
 from types import ModuleType
@@ -17,7 +17,7 @@ for name in dir(_wsproto):
         continue
     globals()[name] = getattr(_wsproto, name)
 
-# Mirror common submodules so importers can continue using fasthttp.wsproto.*
+# Mirror common submodules so importers can continue using maxhttp.wsproto.*
 _submodules: Dict[str, ModuleType] = {}
 for submodule in ("connection", "events", "frame_protocol", "handshake", "typing"):
     module = import_module(f"wsproto.{submodule}")

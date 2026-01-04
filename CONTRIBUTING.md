@@ -1,6 +1,6 @@
-# Contributing to fasthttp
+# Contributing to maxhttp
 
-Thank you for your interest in contributing to fasthttp! This document outlines the process for contributing to this project and provides guidelines to ensure a smooth experience for all contributors.
+Thank you for your interest in contributing to maxhttp! This document outlines the process for contributing to this project and provides guidelines to ensure a smooth experience for all contributors.
 
 ## Table of Contents
 - [Getting Started](#getting-started)
@@ -18,8 +18,8 @@ Thank you for your interest in contributing to fasthttp! This document outlines 
 1. Fork the repository on GitHub
 2. Clone your fork locally
    ```bash
-   git clone https://github.com/shayanheidari01/fasthttp.git
-   cd fasthttp
+   git clone https://github.com/shayanheidari01/maxhttp.git
+   cd maxhttp
    ```
 3. Create a branch for your changes
    ```bash
@@ -55,7 +55,7 @@ ruff check .
 Additionally, the project uses `mypy` for type checking:
 
 ```bash
-mypy fasthttp/
+mypy maxhttp/
 ```
 
 ### Code Formatting
@@ -77,7 +77,7 @@ All contributions should include appropriate tests. The project uses `pytest` fo
 python -m pytest
 
 # Run tests with coverage
-python -m pytest --cov=fasthttp
+python -m pytest --cov=maxhttp
 
 # Run a specific test file
 python -m pytest test.py

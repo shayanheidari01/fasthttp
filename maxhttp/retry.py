@@ -2,10 +2,15 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Sequence, Tuple, Type
 import time
 
-from .errors import FastHTTPError, RequestError, ResponseError
+from .errors import MaxHTTPError, RequestError, ResponseError
 
 
-DEFAULT_RETRY_EXC: Tuple[Type[BaseException], ...] = (RequestError, ResponseError, FastHTTPError, TimeoutError)
+DEFAULT_RETRY_EXC: Tuple[Type[BaseException], ...] = (
+    RequestError,
+    ResponseError,
+    MaxHTTPError,
+    TimeoutError,
+)
 
 
 @dataclass

@@ -1,13 +1,13 @@
 import asyncio
 
-from fasthttp import WebSocket
+from maxhttp import WebSocket
 
 
 async def websocket_client():
     url = "wss://echo.websocket.org"
     async with WebSocket.connect(url) as ws:
         # Send text message
-        message = "Hello from fasthttp 👋"
+        message = "Hello from maxhttp 👋"
         await ws.send_text(message)
         print("Sent:", message)
 

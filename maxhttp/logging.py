@@ -1,7 +1,7 @@
 import logging
 
 
-def get_logger(name: str = "fasthttp", level: int = logging.INFO) -> logging.Logger:
+def get_logger(name: str = "maxhttp", level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler()

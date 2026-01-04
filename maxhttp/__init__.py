@@ -1,4 +1,4 @@
-"""fasthttp public API surface and sync convenience wrappers.
+"""maxhttp public API surface and sync convenience wrappers.
 
 This module exposes the primary client classes, error hierarchy, and helper
 functions, while also providing ready-to-use async convenience shortcuts
@@ -8,6 +8,7 @@ the ergonomics of popular HTTP clients while keeping the async-first core."""
 
 import sys
 
+from ._version import __version__ as __version__
 from .client import Client
 from .response import Response
 from .request import Request
@@ -18,7 +19,7 @@ from .websocket import WebSocket
 from .auth import AuthBase, BasicAuth, DigestAuth
 from . import sync
 from .errors import (
-    FastHTTPError,
+    MaxHTTPError,
     RequestError,
     ResponseError,
     HTTPStatusError,
@@ -49,7 +50,7 @@ async def delete(url: str, **kwargs) -> Response:
         return await client.delete(url, **kwargs)
 
 async def patch(url: str, **kwargs) -> Response:
-    """Submit a PATCH request while reusing fasthttp's default configuration."""
+    """Submit a PATCH request while reusing maxhttp's default configuration."""
     async with Client() as client:
         return await client.patch(url, **kwargs)
 
@@ -82,7 +83,7 @@ __all__ = [
     "AuthBase",
     "BasicAuth",
     "DigestAuth",
-    "FastHTTPError",
+    "MaxHTTPError",
     "RequestError",
     "ResponseError",
     "HTTPStatusError",
@@ -94,11 +95,5 @@ __all__ = [
     "get",
     "post",
     "put",
-    "delete",
-    "patch",
-    "options",
-    "head",
-    "trace",
+    "__version__",
 ]
-
-__version__ = "0.1.8"
