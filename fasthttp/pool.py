@@ -82,6 +82,14 @@ class ConnectionPool:
             self._last_time_check = current
         return self._cached_time
     
+    @staticmethod
+    def _get_running_loop() -> Optional[asyncio.AbstractEventLoop]:
+        """Return the currently running event loop if available."""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
     def _get_queue(self, key: Tuple[str, str, int, bool]) -> Deque[ConnectionType]:
         """Get or create deque for a connection key."""
         queue = self._pools.get(key)
@@ -148,6 +156,7 @@ class ConnectionPool:
         queue = self._get_queue(key)
         lock = self._locks[key]
         current_time = self._get_current_time()
+        current_loop = self._get_running_loop()
         
         # Try to get a connection from pool
         stale: list[ConnectionType] = []
@@ -155,6 +164,10 @@ class ConnectionPool:
         async with lock:
             while queue:
                 candidate = queue.pop()
+                candidate_loop = getattr(candidate, "_loop", None)
+                if current_loop is not None and candidate_loop is not None and candidate_loop is not current_loop:
+                    stale.append(candidate)
+                    continue
                 if self.enable_health_check and not self._is_connection_healthy(candidate):
                     stale.append(candidate)
                     continue
@@ -196,6 +209,7 @@ class ConnectionPool:
                 ssl_context=ssl_context,
                 scheme=scheme,
             )
+        setattr(conn, "_loop", current_loop)
         self._connection_times[conn] = current_time
         self._stats.total_connections_created += 1
         
