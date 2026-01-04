@@ -107,6 +107,7 @@ else:
             self._connected = False
             self.closed = False
             self._last_activity = 0.0
+            self._pending_goaway_close = False
 
         def _update_activity(self, *, bytes_sent: int = 0, bytes_received: int = 0) -> None:
             self._last_activity = time.time()
@@ -306,10 +307,16 @@ else:
         async def _mark_stream_finished(self, stream_id: int) -> None:
             self._stream_closed = True
             self._current_stream_id = None
+            if self._pending_goaway_close:
+                self._pending_goaway_close = False
+                await self.close()
 
         async def _ensure_stream_closed(self, stream_id: int, *, cancel_if_open: bool) -> None:
             if self._stream_closed:
                 self._current_stream_id = None
+                if self._pending_goaway_close:
+                    self._pending_goaway_close = False
+                    await self.close()
                 return
             if cancel_if_open:
                 try:
@@ -368,7 +375,18 @@ else:
             elif isinstance(event, SettingsAcknowledged):
                 return
             elif isinstance(event, ConnectionTerminated):
+                last_stream_id = getattr(event, "last_stream_id", -1)
+                if (
+                    event.error_code == ErrorCodes.NO_ERROR
+                    and self._current_stream_id is not None
+                    and last_stream_id >= self._current_stream_id
+                ):
+                    # Server is performing a graceful shutdown but will finish our in-flight stream.
+                    self._pending_goaway_close = True
+                    return
                 await self.close()
+                if event.error_code == ErrorCodes.NO_ERROR:
+                    raise ResponseError("HTTP/2 connection closed before completing the active stream")
                 raise ResponseError(f"HTTP/2 connection terminated: {event.error_code}")
             elif isinstance(event, DataReceived):
                 # Data for a stream we are not actively reading. Acknowledge to keep flow control moving.

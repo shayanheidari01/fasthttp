@@ -5,7 +5,7 @@ import re
 HERE = Path(__file__).parent
 
 long_description = (HERE / "README.md").read_text(encoding="utf-8")
-init_text = (HERE / "maxhttp" / "__init__.py").read_text(encoding="utf-8")
+init_text = (HERE / "maxhttp" / "_version.py").read_text(encoding="utf-8")
 _version_match = re.search(r'^__version__\s*=\s*[\'\"]([^\'\"]+)[\'\"]', init_text, re.M)
 version = _version_match.group(1) if _version_match else "0.0.0"
 
